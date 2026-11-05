@@ -1,0 +1,27 @@
+# Gradle dan IDE
+*.iml
+.gradle
+/local.properties
+local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+
+# Hasil build (semua modul, termasuk app/build)
+/build
+build/
+/captures
+.externalNativeBuild
+.cxx
+
+# Hasil kompilasi aplikasi
+*.apk
+*.aab
+
+# Kunci tanda tangan aplikasi (rahasia, jangan diunggah)
+*.jks
+*.keystore
