@@ -139,12 +139,14 @@ fun IrasApp() {
 
         // Bluetooth (BLE) ke ESP32
         val context = LocalContext.current
-        val ble = remember { BleManager(context) }
-        DisposableEffect(Unit) { onDispose { ble.disconnect() } }
+        val ble = remember { BleManager(context) }          // wearable IMU
+        val bleWind = remember { BleManager(context) }      // node sensor angin
+        DisposableEffect(Unit) { onDispose { ble.disconnect(); bleWind.disconnect() } }
         val bleState by ble.state.collectAsState()
         val imuData by ble.imu.collectAsState()
+        val imuStatus by ble.statusText.collectAsState()
         // Status IMU hijau jika ESP32 (apa pun UUID-nya) tersambung dan data x,y,z sudah diterima
-        val imuConnected = bleState is BleState.Connected && imuData != null
+        val imuConnected = bleState is BleState.Connected && (imuData != null || imuStatus != null)
 
         // Semua tab punya header navy, jadi ikon status bar selalu terang (putih)
         val view = LocalView.current
@@ -254,7 +256,7 @@ fun IrasApp() {
                             }
                         )
 
-                        IrasTab.IoT -> IoTScreen(ble = ble)
+                        IrasTab.IoT -> IoTScreen(ble = ble, bleWind = bleWind)
 
                         IrasTab.Riwayat -> RiwayatScreen(
                             sessions = sessions,

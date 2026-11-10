@@ -73,6 +73,8 @@ import com.example.iras.ble.BleManager
 import com.example.iras.ble.BleState
 import com.example.iras.ble.ImuData
 import com.example.iras.ble.MovementEvent
+import com.example.iras.ble.WindData
+import com.example.iras.ble.WindEvent
 import com.example.iras.ble.RawPacket
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -108,6 +110,7 @@ private fun wrapDegrees(angle: Float): Float {
 @Composable
 fun IoTScreen(
     ble: BleManager,
+    bleWind: BleManager,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -120,6 +123,16 @@ fun IoTScreen(
     val movementCount by ble.movementCount.collectAsState()
     val latestImu by rememberUpdatedState(imu)
 
+    // Node sensor angin: koneksi BLE kedua, terpisah dari wearable IMU
+    val windState by bleWind.state.collectAsState()
+    val windDevices by bleWind.devices.collectAsState()
+    val wind by bleWind.wind.collectAsState()
+    val windHistory by bleWind.windHistory.collectAsState()
+    val windMax by bleWind.windMax.collectAsState()
+    val windConnected = windState as? BleState.Connected
+    val windConnecting = windState is BleState.Connecting
+    val windOn = windConnected != null && wind != null
+
     val connected = bleState as? BleState.Connected
     val isConnecting = bleState is BleState.Connecting
 
@@ -127,9 +140,8 @@ fun IoTScreen(
     val imuOn = connected != null && (imu != null || status != null)
 
     var showScanner by remember { mutableStateOf(false) }
-    var windOn by remember { mutableStateOf(false) }
+    var scanTarget by remember { mutableIntStateOf(0) }  // 0 = IMU, 1 = angin
     var imuBattery by remember { mutableStateOf<Int?>(null) }  // null = belum ada data dari ESP32
-    var windBattery by remember { mutableIntStateOf(64) }
 
     var roll by remember { mutableFloatStateOf(0f) }
     var pitch by remember { mutableFloatStateOf(0f) }
@@ -150,9 +162,11 @@ fun IoTScreen(
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    fun scanner() = if (scanTarget == 0) ble else bleWind
+
     fun openScanner() {
         showScanner = true
-        ble.startScan()
+        scanner().startScan()
     }
 
     val enableLauncher = rememberLauncherForActivityResult(
@@ -160,7 +174,7 @@ fun IoTScreen(
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             showScanner = true
-            ble.startScan()
+            scanner().startScan()
         }
     }
 
@@ -170,7 +184,7 @@ fun IoTScreen(
         if (result.values.all { it }) {
             if (ble.isBluetoothEnabled) {
                 showScanner = true
-                ble.startScan()
+                scanner().startScan()
             } else {
                 enableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             }
@@ -179,7 +193,8 @@ fun IoTScreen(
         }
     }
 
-    fun startFlow() {
+    fun startFlow(target: Int) {
+        scanTarget = target
         when {
             !hasPermissions() -> permissionLauncher.launch(permissions)
             !ble.isBluetoothEnabled -> enableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
@@ -230,14 +245,6 @@ fun IoTScreen(
         }
     }
 
-    // Simulasi data sensor angin (RS485 anemometer), belum tersambung ke perangkat
-    LaunchedEffect(windOn) {
-        while (windOn) {
-            delay(1500)
-            if (Random.nextInt(5) == 0 && windBattery > 0) windBattery--
-        }
-    }
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -267,7 +274,7 @@ fun IoTScreen(
                 },
                 buttonLabel = if (connected != null || isConnecting) "PUTUSKAN" else "CARI",
                 onToggle = {
-                    if (connected != null || isConnecting) ble.disconnect() else startFlow()
+                    if (connected != null || isConnecting) ble.disconnect() else startFlow(0)
                 }
             )
 
@@ -282,18 +289,39 @@ fun IoTScreen(
 
             DeviceCard(
                 title = "Stasiun Sensor Angin",
-                subtitle = "Modbus RS485 Tripod Node",
+                subtitle = "Node ESP32 IRAS-WindNode",
                 icon = Icons.Filled.Air,
                 isOn = windOn,
-                statusLabel = if (windOn) "Terhubung" else "Terputus",
-                buttonLabel = "TOGGLE",
-                onToggle = { windOn = !windOn }
+                statusLabel = when {
+                    windOn -> "Terhubung"
+                    windConnected != null -> "Terhubung, menunggu data..."
+                    windConnecting -> "Menyambung..."
+                    windState is BleState.Scanning -> "Mencari..."
+                    else -> "Terputus"
+                },
+                buttonLabel = if (windConnected != null || windConnecting) "PUTUSKAN" else "CARI",
+                onToggle = {
+                    if (windConnected != null || windConnecting) bleWind.disconnect() else startFlow(1)
+                }
             )
+
+            (windState as? BleState.Error)?.let { error ->
+                Text(
+                    error.message,
+                    fontSize = 12.sp,
+                    color = BadColor,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+            }
+
+            if (windConnected != null) {
+                WindCard(wind = wind, history = windHistory, maxSpeed = windMax)
+            }
 
             BatteryCard(
                 imuBattery = imuBattery,
                 imuOn = imuOn,
-                windBattery = windBattery,
+                windBattery = null,   // firmware node angin belum mengirim level baterai
                 windOn = windOn
             )
 
@@ -315,17 +343,24 @@ fun IoTScreen(
 
     // ---------- Dialog pemindai Bluetooth ----------
     if (showScanner) {
+        val activeBle = if (scanTarget == 0) ble else bleWind
+        val activeState = if (scanTarget == 0) bleState else windState
+        // Perangkat yang sudah dipakai koneksi lain tidak ditawarkan lagi
+        val otherAddress = (if (scanTarget == 0) windConnected?.address else connected?.address)
+        val activeDevices = (if (scanTarget == 0) devices else windDevices)
+            .filter { it.address != otherAddress }
         ScannerDialog(
-            scanning = bleState is BleState.Scanning,
-            devices = devices,
-            onRescan = { ble.startScan() },
+            title = if (scanTarget == 0) "Pilih wearable IMU" else "Pilih node sensor angin",
+            scanning = activeState is BleState.Scanning,
+            devices = activeDevices,
+            onRescan = { activeBle.startScan() },
             onSelect = { device ->
                 showScanner = false
-                ble.connect(device.address)
+                activeBle.connect(device.address)
             },
             onDismiss = {
                 showScanner = false
-                ble.stopScan()
+                activeBle.stopScan()
             }
         )
     }
@@ -334,6 +369,7 @@ fun IoTScreen(
 // ---------- Dialog daftar perangkat ----------
 @Composable
 private fun ScannerDialog(
+    title: String,
     scanning: Boolean,
     devices: List<BleDevice>,
     onRescan: () -> Unit,
@@ -344,7 +380,7 @@ private fun ScannerDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Perangkat Bluetooth", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (scanning) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 }
@@ -554,7 +590,7 @@ private fun DeviceCard(
 private fun BatteryCard(
     imuBattery: Int?,
     imuOn: Boolean,
-    windBattery: Int,
+    windBattery: Int?,
     windOn: Boolean
 ) {
     Card(
@@ -676,6 +712,134 @@ private fun BatteryRow(name: String, level: Int?, active: Boolean) {
         )
         if (shown != null && shown < 20) {
             Text("Baterai rendah, segera isi daya.", fontSize = 11.sp, color = BadColor)
+        }
+    }
+}
+
+// ---------- Kondisi angin ----------
+@Composable
+private fun WindCard(wind: WindData?, history: List<WindEvent>, maxSpeed: Float) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FB)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB))
+    ) {
+        Column {
+            Text(
+                "KONDISI ANGIN",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 18.dp),
+                textAlign = TextAlign.Center,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = GreyText
+            )
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+
+            HistoryRow(
+                label = "Kecepatan Angin",
+                value = wind?.let { "${"%.2f".format(it.speed)} m/s" } ?: "--",
+                valueColor = if (wind != null) BlueValue else GreyText,
+                showCheck = false,
+                subValue = wind?.let { "${"%.1f".format(it.speed * 3.6f)} km/jam" }
+            )
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+            HistoryRow(
+                label = "Kategori",
+                value = wind?.category ?: "--",
+                valueColor = if (wind != null) GoodColor else GreyText,
+                showCheck = false
+            )
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+            HistoryRow(
+                label = "Arah Angin",
+                value = when {
+                    wind == null -> "--"
+                    wind.directionOk -> wind.direction
+                    else -> "Sensor arah error"
+                },
+                valueColor = when {
+                    wind == null -> GreyText
+                    wind.directionOk -> BlueValue
+                    else -> BadColor
+                },
+                showCheck = false,
+                subValue = if (wind != null && wind.directionOk) "${"%.1f".format(wind.degrees)}°" else null
+            )
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+            HistoryRow(
+                label = "Kecepatan Maksimum",
+                value = if (wind != null) "${"%.2f".format(maxSpeed)} m/s" else "--",
+                valueColor = if (wind != null) WarnColor else GreyText,
+                showCheck = false
+            )
+
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+            Text(
+                "RIWAYAT PERUBAHAN ANGIN",
+                modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 8.dp),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = GreyText
+            )
+            if (history.isEmpty()) {
+                Text(
+                    "Menunggu data dari node angin...",
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+                    fontSize = 13.sp,
+                    color = GreyText
+                )
+            } else {
+                history.take(10).forEach { e ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(BlueValue)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                e.category,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF111827)
+                            )
+                            Text(
+                                "${e.direction} · ${"%.2f".format(e.speed)} m/s",
+                                fontSize = 12.sp,
+                                color = GreyText
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            timeFormat.format(Date(e.timestamp)),
+                            fontSize = 12.sp,
+                            color = GreyText
+                        )
+                    }
+                }
+                if (history.size > 10) {
+                    Text(
+                        "${history.size - 10} perubahan lebih lama disimpan (maks. 50).",
+                        modifier = Modifier.padding(start = 20.dp, top = 4.dp),
+                        fontSize = 11.sp,
+                        color = GreyText
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+            }
         }
     }
 }

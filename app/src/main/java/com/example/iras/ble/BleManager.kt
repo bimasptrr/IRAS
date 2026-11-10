@@ -28,6 +28,42 @@ data class MovementEvent(val text: String, val timestamp: Long) {
     val isStill: Boolean get() = text.trim().equals("diam", ignoreCase = true)
 }
 
+/** Satu bacaan dari node sensor angin: "kecepatan,kategori,arah_teks,derajat". */
+data class WindData(
+    val speed: Float,        // m/s
+    val category: String,    // Tenang, Sepoi-sepoi, Agak Kencang, Kencang, Sangat Kencang
+    val direction: String,   // 16 arah mata angin, atau "Error"
+    val degrees: Float,      // 0..360, atau -1 bila sensor arah error
+    val timestamp: Long
+) {
+    val directionOk: Boolean get() = degrees >= 0f && !direction.equals("Error", ignoreCase = true)
+}
+
+/** Perubahan kondisi angin (kategori atau arah berubah) untuk riwayat. */
+data class WindEvent(
+    val category: String,
+    val direction: String,
+    val speed: Float,
+    val timestamp: Long
+)
+
+object WindPacketParser {
+    /** Mengurai satu baris teks; null bila bukan format angin. */
+    fun parse(bytes: ByteArray, now: Long): WindData? {
+        if (!ImuPacketParser.isPrintable(bytes)) return null
+        val parts = String(bytes, Charsets.UTF_8).trim().split(",").map { it.trim() }
+        if (parts.size != 4) return null
+        val speed = parts[0].toFloatOrNull() ?: return null
+        val degrees = parts[3].toFloatOrNull() ?: return null
+        if (!speed.isFinite() || !degrees.isFinite() || speed < 0f || speed > 200f) return null
+        if (degrees != -1f && (degrees < 0f || degrees > 360f)) return null
+        // Kategori dan arah harus teks (tanpa angka); ini membedakan dari paket IMU
+        if (parts[1].isEmpty() || parts[2].isEmpty()) return null
+        if (parts[1].any { it.isDigit() } || parts[2].any { it.isDigit() }) return null
+        return WindData(speed, parts[1], parts[2], degrees, now)
+    }
+}
+
 /** Status koneksi Bluetooth (BLE). */
 sealed interface BleState {
     data object Idle : BleState
@@ -145,6 +181,17 @@ class BleManager(context: Context) {
     private val _movementCount = MutableStateFlow(0)
     val movementCount: StateFlow<Int> = _movementCount.asStateFlow()
 
+    /** Bacaan angin terbaru (null = belum ada). Hanya terisi bila perangkat mengirim format angin. */
+    private val _wind = MutableStateFlow<WindData?>(null)
+    val wind: StateFlow<WindData?> = _wind.asStateFlow()
+
+    private val _windHistory = MutableStateFlow<List<WindEvent>>(emptyList())
+    val windHistory: StateFlow<List<WindEvent>> = _windHistory.asStateFlow()
+
+    /** Kecepatan angin tertinggi sejak tersambung (m/s). */
+    private val _windMax = MutableStateFlow(0f)
+    val windMax: StateFlow<Float> = _windMax.asStateFlow()
+
     val isBluetoothEnabled: Boolean get() = adapter?.isEnabled == true
 
     // ---------- Pemindaian (semua perangkat BLE) ----------
@@ -255,6 +302,9 @@ class BleManager(context: Context) {
         _statusText.value = null
         _movementHistory.value = emptyList()
         _movementCount.value = 0
+        _wind.value = null
+        _windHistory.value = emptyList()
+        _windMax.value = 0f
         userDisconnect = false
         _state.value = BleState.Connecting(deviceName)
         gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -303,6 +353,7 @@ class BleManager(context: Context) {
                     synchronized(subscribeQueue) { subscribeQueue.clear() }
                     _imu.value = null
                     _statusText.value = null
+                    _wind.value = null
                     _state.value = if (userDisconnect || status == BluetoothGatt.GATT_SUCCESS) {
                         BleState.Idle
                     } else {
@@ -423,6 +474,22 @@ class BleManager(context: Context) {
         val assembler = assemblers.getOrPut(uuid) { PacketAssembler() }
         for (payload in assembler.feed(bytes)) {
             val now = System.currentTimeMillis()
+
+            // Paket angin dicek lebih dulu: angkanya mirip paket IMU 2 nilai
+            val windData = WindPacketParser.parse(payload, now)
+            if (windData != null) {
+                recordWind(windData)
+                _raw.value = RawPacket(
+                    characteristic = uuid.toString(),
+                    text = ImuPacketParser.describe(payload),
+                    size = payload.size,
+                    parsed = true,
+                    timestamp = now
+                )
+                _packetCount.value = _packetCount.value + 1
+                continue
+            }
+
             val data = ImuPacketParser.parse(payload, now)
             if (data != null) _imu.value = data
 
@@ -441,6 +508,16 @@ class BleManager(context: Context) {
             )
             _packetCount.value = _packetCount.value + 1
         }
+    }
+
+    /** Simpan bacaan angin; riwayat hanya dicatat saat kategori atau arah berubah. */
+    private fun recordWind(w: WindData) {
+        _wind.value = w
+        if (w.speed > _windMax.value) _windMax.value = w.speed
+        val last = _windHistory.value.firstOrNull()
+        if (last != null && last.category == w.category && last.direction == w.direction) return
+        _windHistory.value = (listOf(WindEvent(w.category, w.direction, w.speed, w.timestamp)) +
+                _windHistory.value).take(MAX_HISTORY)
     }
 
     /** Catat status gerakan; paket yang sama berulang-ulang hanya dicatat sekali. */
