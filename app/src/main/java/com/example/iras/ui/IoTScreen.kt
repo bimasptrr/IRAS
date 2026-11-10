@@ -72,8 +72,12 @@ import com.example.iras.ble.BleDevice
 import com.example.iras.ble.BleManager
 import com.example.iras.ble.BleState
 import com.example.iras.ble.ImuData
+import com.example.iras.ble.MovementEvent
 import com.example.iras.ble.RawPacket
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.sqrt
 import kotlin.random.Random
 
@@ -100,11 +104,6 @@ private fun wrapDegrees(angle: Float): Float {
     return a
 }
 
-/** UUID standar 16-bit dipendekkan, contoh 0000180f-0000-1000-8000-00805f9b34fb -> 0x180F. */
-private fun shortUuid(uuid: String): String =
-    if (uuid.endsWith("-0000-1000-8000-00805f9b34fb") && uuid.length >= 8) {
-        "0x" + uuid.substring(4, 8).uppercase()
-    } else uuid
 
 @Composable
 fun IoTScreen(
@@ -115,15 +114,17 @@ fun IoTScreen(
     val bleState by ble.state.collectAsState()
     val devices by ble.devices.collectAsState()
     val imu by ble.imu.collectAsState()
-    val raw by ble.raw.collectAsState()
     val packetCount by ble.packetCount.collectAsState()
+    val status by ble.statusText.collectAsState()
+    val movementHistory by ble.movementHistory.collectAsState()
+    val movementCount by ble.movementCount.collectAsState()
     val latestImu by rememberUpdatedState(imu)
 
     val connected = bleState as? BleState.Connected
     val isConnecting = bleState is BleState.Connecting
 
     // Status sensor IMU: hijau hanya jika sudah ada paket x,y,z yang berhasil dibaca dari ESP32 mana pun
-    val imuOn = connected != null && imu != null
+    val imuOn = connected != null && (imu != null || status != null)
 
     var showScanner by remember { mutableStateOf(false) }
     var windOn by remember { mutableStateOf(false) }
@@ -279,25 +280,6 @@ fun IoTScreen(
                 )
             }
 
-            // Data masuk dari ESP32 yang tersambung (x, y, z + paket mentah untuk diagnosis)
-            if (connected != null) {
-                DataMonitorCard(
-                    connected = connected,
-                    imu = imu,
-                    raw = raw,
-                    packetCount = packetCount,
-                    onReset = {
-                        val sent = ble.sendResetCommand()
-                        Toast.makeText(
-                            context,
-                            if (sent) "Perintah reset titik nol dikirim"
-                            else "Gagal mengirim reset: perangkat tidak punya characteristic tulis atau sedang sibuk",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                )
-            }
-
             DeviceCard(
                 title = "Stasiun Sensor Angin",
                 subtitle = "Modbus RS485 Tripod Node",
@@ -316,14 +298,17 @@ fun IoTScreen(
             )
 
             MovementHistoryCard(
+                connected = connected != null,
+                status = status,
+                history = movementHistory,
+                movementCount = movementCount,
+                hasAngle = imuOn && imu != null,
                 direction = if (imuOn && imu?.hasOrientation == true) handDirection else "--",
                 magnitude = when {
                     imuOn && angleOnly -> "${"%.1f".format(magnitude)}°"
                     imuOn && magnitude > 0f -> "${"%.1f".format(magnitude)} g"
                     else -> "-- g"
-                },
-                hasData = imuOn && (angleOnly || magnitude > 0f),
-                hasDirection = imuOn && imu?.hasOrientation == true
+                }
             )
         }
     }
@@ -431,152 +416,6 @@ private fun DeviceRow(device: BleDevice, onClick: () -> Unit) {
             Spacer(Modifier.width(8.dp))
         }
         Text("${device.rssi} dBm", fontSize = 11.sp, color = GreyText)
-    }
-}
-
-// ---------- Kartu data masuk dari ESP32 ----------
-@Composable
-private fun DataMonitorCard(
-    connected: BleState.Connected,
-    imu: ImuData?,
-    raw: RawPacket?,
-    packetCount: Int,
-    onReset: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = BorderStroke(1.dp, Color(0xFFE5E7EB))
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(connected.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF111827))
-            Text(connected.address, fontSize = 11.sp, color = GreyText)
-
-            Spacer(Modifier.height(4.dp))
-            Text(
-                if (imu != null && !imu.hasAccel) "SUDUT IMU (DERAJAT)" else "DATA IMU (X, Y, Z)",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                color = GreyText
-            )
-            if (imu != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (imu.hasAccel) {
-                        AxisBox("X", imu.ax, "m/s²", Modifier.weight(1f))
-                        AxisBox("Y", imu.ay, "m/s²", Modifier.weight(1f))
-                        AxisBox("Z", imu.az, "m/s²", Modifier.weight(1f))
-                    } else {
-                        AxisBox("Sudut X", imu.roll, "derajat", Modifier.weight(1f))
-                        AxisBox("Sudut Y", imu.pitch, "derajat", Modifier.weight(1f))
-                    }
-                }
-                Text(
-                    when {
-                        !imu.hasAccel -> "Paket berisi dua sudut (derajat). Titik nol diatur oleh ESP32."
-                        imu.hasOrientation -> "Paket lengkap: percepatan, gyro, roll, pitch."
-                        imu.hasGyro -> "Paket berisi percepatan dan gyro."
-                        else -> "Paket berisi x, y, z saja (dianggap percepatan, m/s²)."
-                    },
-                    fontSize = 11.sp,
-                    color = GreyText
-                )
-            } else {
-                Text(
-                    when {
-                        connected.subscribed.isEmpty() ->
-                            "ESP32 ini tidak punya characteristic NOTIFY. Pastikan sketch memakai PROPERTY_NOTIFY."
-                        packetCount == 0 -> "Menunggu data dari ESP32..."
-                        else -> "Paket diterima, tetapi bukan format x,y,z. Lihat paket mentah di bawah."
-                    },
-                    fontSize = 12.sp,
-                    color = WarnColor
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(NavyLight)
-                    .clickable(onClick = onReset)
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "RESET TITIK NOL",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-            }
-
-            HorizontalDivider(color = Color(0xFFE5E7EB))
-            Text(
-                "PAKET TERAKHIR",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                color = GreyText
-            )
-            if (raw != null) {
-                Text(raw.text, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF111827))
-                Text(
-                    "${raw.size} byte · " + (if (raw.parsed) "terbaca" else "tidak terbaca") +
-                            " · ${shortUuid(raw.characteristic)}",
-                    fontSize = 11.sp,
-                    color = if (raw.parsed) GoodColor else WarnColor
-                )
-            } else {
-                Text("Belum ada paket.", fontSize = 12.sp, color = GreyText)
-            }
-            Text(
-                "$packetCount paket diterima · ${connected.subscribed.size} characteristic aktif",
-                fontSize = 11.sp,
-                color = GreyText
-            )
-
-            HorizontalDivider(color = Color(0xFFE5E7EB))
-            Text(
-                "LAYANAN GATT (${connected.services.size})",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                color = GreyText
-            )
-            connected.services.take(6).forEach { uuid ->
-                Text(shortUuid(uuid), fontSize = 12.sp, color = Color(0xFF374151))
-            }
-            if (connected.services.size > 6) {
-                Text("+${connected.services.size - 6} lainnya", fontSize = 11.sp, color = GreyText)
-            }
-        }
-    }
-}
-
-@Composable
-private fun AxisBox(label: String, value: Float, unit: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(ChipGrey)
-            .padding(vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = GreyText)
-        Text(
-            "%.2f".format(value),
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = BlueValue
-        )
-        Text(unit, fontSize = 10.sp, color = GreyText)
     }
 }
 
@@ -842,13 +681,21 @@ private fun BatteryRow(name: String, level: Int?, active: Boolean) {
 }
 
 // ---------- Histori gerakan ----------
+private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale("id", "ID"))
+
 @Composable
 private fun MovementHistoryCard(
+    connected: Boolean,
+    status: String?,
+    history: List<MovementEvent>,
+    movementCount: Int,
+    hasAngle: Boolean,
     direction: String,
-    magnitude: String,
-    hasData: Boolean,
-    hasDirection: Boolean
+    magnitude: String
 ) {
+    val still = status?.trim()?.equals("diam", ignoreCase = true) == true
+    val lastMove = history.firstOrNull { !it.isStill }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -871,55 +718,160 @@ private fun MovementHistoryCard(
             HorizontalDivider(color = Color(0xFFE5E7EB))
 
             HistoryRow(
-                label = "Arah Tangan Setelah Release",
-                value = direction,
-                valueColor = if (hasDirection) BlueValue else GreyText,
-                showCheck = hasDirection
+                label = "Status Gerakan Saat Ini",
+                value = status ?: "--",
+                valueColor = when {
+                    status == null -> GreyText
+                    still -> GoodColor
+                    else -> WarnColor
+                },
+                showCheck = status != null && still
             )
             HorizontalDivider(color = Color(0xFFE5E7EB))
             HistoryRow(
-                label = "Besar Gerakan (Magnitude)",
-                value = magnitude,
-                valueColor = if (hasData) GoodColor else GreyText,
+                label = "Jumlah Gerakan Terdeteksi",
+                value = if (connected || history.isNotEmpty()) "$movementCount kali" else "--",
+                valueColor = if (movementCount > 0) BlueValue else GreyText,
                 showCheck = false
             )
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+            HistoryRow(
+                label = "Gerakan Terakhir",
+                value = lastMove?.text ?: "--",
+                subValue = lastMove?.let { timeFormat.format(Date(it.timestamp)) },
+                valueColor = if (lastMove != null) BlueValue else GreyText,
+                showCheck = false
+            )
+
+            // Hanya tampil bila wearable juga mengirim sudut (format "x,y" atau x,y,z)
+            if (hasAngle) {
+                HorizontalDivider(color = Color(0xFFE5E7EB))
+                HistoryRow(
+                    label = "Arah Tangan Setelah Release",
+                    value = direction,
+                    valueColor = if (direction != "--") BlueValue else GreyText,
+                    showCheck = direction != "--"
+                )
+                HorizontalDivider(color = Color(0xFFE5E7EB))
+                HistoryRow(
+                    label = "Besar Gerakan (Magnitude)",
+                    value = magnitude,
+                    valueColor = GoodColor,
+                    showCheck = false
+                )
+            }
+
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+            Text(
+                "RIWAYAT PERUBAHAN STATUS",
+                modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 8.dp),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = GreyText
+            )
+            if (history.isEmpty()) {
+                Text(
+                    if (connected) "Menunggu status dari wearable..." else "Hubungkan sensor IMU untuk melihat riwayat.",
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+                    fontSize = 13.sp,
+                    color = GreyText
+                )
+            } else {
+                history.take(10).forEach { e ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(if (e.isStill) GoodColor else WarnColor)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            e.text,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF111827),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            timeFormat.format(Date(e.timestamp)),
+                            fontSize = 12.sp,
+                            color = GreyText
+                        )
+                    }
+                }
+                if (history.size > 10) {
+                    Text(
+                        "${history.size - 10} kejadian lebih lama disimpan (maks. 50).",
+                        modifier = Modifier.padding(start = 20.dp, top = 4.dp),
+                        fontSize = 11.sp,
+                        color = GreyText
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+            }
         }
     }
 }
 
+/**
+ * Satu baris label + nilai. Label dan nilai berbagi lebar (45% : 55%) dan nilai boleh turun
+ * ke beberapa baris, sehingga teks panjang seperti "Ke Kanan, Ke Bawah dan Ke Depan"
+ * tidak mendesak label dan tidak terpotong.
+ */
 @Composable
 private fun HistoryRow(
     label: String,
     value: String,
     valueColor: Color,
-    showCheck: Boolean
+    showCheck: Boolean,
+    subValue: String? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 20.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             label,
             fontSize = 14.sp,
             color = Color(0xFF4B5563),
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(0.45f)
         )
-        Text(
-            value,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            color = valueColor
-        )
-        if (showCheck) {
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                Icons.Filled.Check,
-                contentDescription = null,
-                tint = valueColor,
-                modifier = Modifier.size(14.dp)
-            )
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(0.55f),
+            horizontalAlignment = Alignment.End
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    value,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = valueColor,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (showCheck) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = valueColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+            if (subValue != null) {
+                Text(subValue, fontSize = 12.sp, color = GreyText, textAlign = TextAlign.End)
+            }
         }
     }
 }

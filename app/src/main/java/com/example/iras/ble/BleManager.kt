@@ -22,6 +22,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
+/** Satu kejadian gerakan yang dikirim wearable (mis. "Diam", atau teks gerakan lain). */
+data class MovementEvent(val text: String, val timestamp: Long) {
+    /** true bila teks berarti sensor sedang diam. */
+    val isStill: Boolean get() = text.trim().equals("diam", ignoreCase = true)
+}
+
 /** Status koneksi Bluetooth (BLE). */
 sealed interface BleState {
     data object Idle : BleState
@@ -68,6 +74,7 @@ data class BleDevice(
 class BleManager(context: Context) {
 
     companion object {
+        private const val MAX_HISTORY = 50
         // UUID sketch IRAS lama (opsional; hanya dipakai untuk memberi label "IRAS")
         val SERVICE_UUID: UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
 
@@ -125,6 +132,18 @@ class BleManager(context: Context) {
     /** Jumlah paket yang diterima sejak tersambung. */
     private val _packetCount = MutableStateFlow(0)
     val packetCount: StateFlow<Int> = _packetCount.asStateFlow()
+
+    /** Teks gerakan terakhir dari wearable (null = belum ada). */
+    private val _statusText = MutableStateFlow<String?>(null)
+    val statusText: StateFlow<String?> = _statusText.asStateFlow()
+
+    /** Riwayat perubahan status gerakan, terbaru di depan (maks. 50). Hanya perubahan yang dicatat. */
+    private val _movementHistory = MutableStateFlow<List<MovementEvent>>(emptyList())
+    val movementHistory: StateFlow<List<MovementEvent>> = _movementHistory.asStateFlow()
+
+    /** Jumlah kejadian gerakan (status selain "Diam") sejak tersambung. */
+    private val _movementCount = MutableStateFlow(0)
+    val movementCount: StateFlow<Int> = _movementCount.asStateFlow()
 
     val isBluetoothEnabled: Boolean get() = adapter?.isEnabled == true
 
@@ -233,6 +252,9 @@ class BleManager(context: Context) {
         _imu.value = null
         _raw.value = null
         _packetCount.value = 0
+        _statusText.value = null
+        _movementHistory.value = emptyList()
+        _movementCount.value = 0
         userDisconnect = false
         _state.value = BleState.Connecting(deviceName)
         gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -280,6 +302,7 @@ class BleManager(context: Context) {
                     if (gatt === g) gatt = null
                     synchronized(subscribeQueue) { subscribeQueue.clear() }
                     _imu.value = null
+                    _statusText.value = null
                     _state.value = if (userDisconnect || status == BluetoothGatt.GATT_SUCCESS) {
                         BleState.Idle
                     } else {
@@ -402,15 +425,32 @@ class BleManager(context: Context) {
             val now = System.currentTimeMillis()
             val data = ImuPacketParser.parse(payload, now)
             if (data != null) _imu.value = data
+
+            // Teks tanpa angka (mis. "Diam") = status gerakan dari wearable, bukan error
+            val text = ImuPacketParser.describe(payload)
+            val isStatus = data == null && ImuPacketParser.isPrintable(payload) &&
+                    text.isNotBlank() && text.none { it.isDigit() }
+            if (isStatus) recordMovement(text, now)
+
             _raw.value = RawPacket(
                 characteristic = uuid.toString(),
-                text = ImuPacketParser.describe(payload),
+                text = text,
                 size = payload.size,
-                parsed = data != null,
+                parsed = data != null || isStatus,
                 timestamp = now
             )
             _packetCount.value = _packetCount.value + 1
         }
+    }
+
+    /** Catat status gerakan; paket yang sama berulang-ulang hanya dicatat sekali. */
+    private fun recordMovement(text: String, now: Long) {
+        _statusText.value = text
+        val last = _movementHistory.value.firstOrNull()
+        if (last != null && last.text == text) return
+        val event = MovementEvent(text, now)
+        _movementHistory.value = (listOf(event) + _movementHistory.value).take(MAX_HISTORY)
+        if (!event.isStill) _movementCount.value = _movementCount.value + 1
     }
 
     // ---------- Perintah ke ESP32 ----------
