@@ -102,13 +102,7 @@ fun statusFor(score: Int, maxScore: Int): String {
     }
 }
 
-fun sampleSessions(): List<SessionRecord> = listOf(
-    SessionRecord(
-        id = 1, date = "21 Apr 2026", distance = "50m", location = "Tembalang",
-        rounds = listOf(RoundRecord(1, listOf("X", "10", "9", "9", "8", "8"))),
-        isPB = true
-    )
-)
+fun sampleSessions(): List<SessionRecord> = emptyList()
 
 // ---------- Laporan TXT ----------
 

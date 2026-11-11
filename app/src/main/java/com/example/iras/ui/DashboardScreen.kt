@@ -53,45 +53,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
-// ---------------------------------------------------------------------------
-// Font
-//
-// Sementara memakai font bawaan supaya proyek bisa dikompilasi.
-//
-// Untuk memakai DM Sans dan Orbitron:
-// 1. Buat folder app/src/main/res/font/
-// 2. Salin file dm_sans.ttf dan orbitron.ttf ke folder itu
-//    (nama huruf kecil, tanpa spasi atau tanda minus)
-// 3. Hapus dua baris FontFamily.Default di bawah, lalu aktifkan blok komentar
-//    di bawahnya dan tambahkan kembali import berikut:
-//      import androidx.compose.ui.text.font.Font
-//      import androidx.compose.ui.text.font.FontVariation
-//      import com.example.iras.R
-// ---------------------------------------------------------------------------
 val IrasBodyFont: FontFamily = FontFamily.Default
 val IrasHeaderFont: FontFamily = FontFamily.Default
 
-/*
-// Variable font, butuh minSdk 26.
-val IrasBodyFont = FontFamily(
-    Font(R.font.dm_sans, FontWeight.Normal, variationSettings = FontVariation.Settings(FontVariation.weight(400))),
-    Font(R.font.dm_sans, FontWeight.Medium, variationSettings = FontVariation.Settings(FontVariation.weight(500))),
-    Font(R.font.dm_sans, FontWeight.SemiBold, variationSettings = FontVariation.Settings(FontVariation.weight(600))),
-    Font(R.font.dm_sans, FontWeight.Bold, variationSettings = FontVariation.Settings(FontVariation.weight(700))),
-    Font(R.font.dm_sans, FontWeight.ExtraBold, variationSettings = FontVariation.Settings(FontVariation.weight(800)))
-)
-
-val IrasHeaderFont = FontFamily(
-    Font(R.font.orbitron, FontWeight.Bold, variationSettings = FontVariation.Settings(FontVariation.weight(700))),
-    Font(R.font.orbitron, FontWeight.ExtraBold, variationSettings = FontVariation.Settings(FontVariation.weight(800))),
-    Font(R.font.orbitron, FontWeight.Black, variationSettings = FontVariation.Settings(FontVariation.weight(900)))
-)
-*/
-
-// ---------------------------------------------------------------------------
-// Warna (estimasi dari desain)
-// ---------------------------------------------------------------------------
 private val PageBg = Color(0xFFF6F8FB)
 private val HeaderTop = Color(0xFF021B4A)
 private val HeaderBottom = Color(0xFF032A6B)
@@ -110,11 +74,7 @@ private val StatusRed = Color(0xFFFF4D5E)
 private val StatusGreen = Color(0xFF3DDC84)
 private val SubtitleBlue = Color(0xFF8FA6D0)
 
-data class SessionConfig(
-    val location: String,
-    val shots: Int,
-    val distance: String
-)
+
 
 private data class DistanceOption(val label: String, val subtitle: String)
 

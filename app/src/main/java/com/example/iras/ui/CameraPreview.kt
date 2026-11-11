@@ -1,11 +1,15 @@
-package com.example.iras.ui.screens
+package com.example.iras.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.view.Surface
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,13 +35,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.iras.ai.PoseEstimator
+import com.example.iras.ai.PoseImageAnalyzer
+import com.example.iras.data.IrasViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
 
 /**
- * Preview kamera perangkat (CameraX). Jika izin kamera belum diberikan,
- * menampilkan tombol untuk meminta izin.
+ * Preview kamera perangkat (CameraX) yang terintegrasi dengan MediaPipe Pose Estimation.
  */
 @Composable
 fun CameraPreview(
+    viewModel: IrasViewModel,
     modifier: Modifier = Modifier,
     useFrontCamera: Boolean = false
 ) {
@@ -52,6 +64,58 @@ fun CameraPreview(
         ActivityResultContracts.RequestPermission()
     ) { granted = it }
 
+    // Inisialisasi PoseEstimator (MediaPipe)
+    val poseEstimator = remember { PoseEstimator(context, viewModel) }
+    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    var poseReady by remember { mutableStateOf(false) }
+
+    // Preview dan ImageAnalysis harus memakai rasio aspek yang sama agar crop
+    // FILL_CENTER di layar identik dengan frame yang dianalisis MediaPipe.
+    val resolutionSelector = remember {
+        ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+            .build()
+    }
+    val analysisUseCase = remember {
+        ImageAnalysis.Builder()
+            .setResolutionSelector(resolutionSelector)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+    }
+
+    LaunchedEffect(granted) {
+        if (granted && poseEstimator.poseLandmarker == null) {
+            poseEstimator.mirrored = useFrontCamera
+            try {
+                // Memuat model tidak dilakukan di main thread agar UI tidak macet.
+                withContext(Dispatchers.IO) { poseEstimator.setup() }
+                poseReady = true
+            } catch (e: Exception) {
+                viewModel.onError(e.message ?: "Gagal memuat model MediaPipe.")
+            }
+        }
+    }
+
+    // Analyzer dipasang setelah model MediaPipe siap. Use case diingat agar
+    // tidak bergantung pada urutan pembuatan AndroidView vs LaunchedEffect.
+    LaunchedEffect(poseReady) {
+        val landmarker = poseEstimator.poseLandmarker
+        if (poseReady && landmarker != null) {
+            analysisUseCase.setAnalyzer(
+                cameraExecutor,
+                PoseImageAnalyzer(landmarker, poseEstimator::updateFrameGeometry)
+            )
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            analysisUseCase.clearAnalyzer()
+            poseEstimator.close()
+            cameraExecutor.shutdown()
+        }
+    }
+
     if (!granted) {
         Column(
             modifier = modifier
@@ -61,7 +125,7 @@ fun CameraPreview(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                "Izin kamera diperlukan untuk Live CV",
+                "Izin kamera diperlukan untuk Live CV Analysis",
                 color = Color.White.copy(alpha = 0.8f),
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center
@@ -77,7 +141,7 @@ fun CameraPreview(
     }
 
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.fillMaxSize(),
         factory = { ctx ->
             val previewView = PreviewView(ctx).apply {
                 scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -85,14 +149,44 @@ fun CameraPreview(
             val providerFuture = ProcessCameraProvider.getInstance(ctx)
             providerFuture.addListener({
                 val provider = providerFuture.get()
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
+
+                // 1. Camera Preview Use Case
+                val preview = Preview.Builder()
+                    .setResolutionSelector(resolutionSelector)
+                    .build()
+                    .also {
+                        it.setSurfaceProvider(previewView.surfaceProvider)
+                    }
+
+                // 2. Image Analysis Use Case (Frame Streaming ke MediaPipe)
+                // Samakan orientasi frame analisis dengan orientasi preview.
+                previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                    previewView.display?.let { display ->
+                        if (analysisUseCase.targetRotation != display.rotation) {
+                            analysisUseCase.targetRotation = display.rotation
+                        }
+                    }
                 }
+                analysisUseCase.targetRotation =
+                    previewView.display?.rotation ?: Surface.ROTATION_0
+
                 val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
                 else CameraSelector.DEFAULT_BACK_CAMERA
-                provider.unbindAll()
-                provider.bindToLifecycle(lifecycleOwner, selector, preview)
+
+                try {
+                    provider.unbindAll()
+                    // Bind Preview dan ImageAnalysis secara bersamaan ke Lifecycle
+                    provider.bindToLifecycle(
+                        lifecycleOwner,
+                        selector,
+                        preview,
+                        analysisUseCase
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }, ContextCompat.getMainExecutor(ctx))
+
             previewView
         }
     )

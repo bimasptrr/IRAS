@@ -3,98 +3,115 @@ package com.example.iras.data
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.iras.ui.screens.RoundRecord
+import com.example.iras.ai.*
 import com.example.iras.ui.screens.SessionConfig
 import com.example.iras.ui.screens.SessionRecord
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Menyimpan daftar sesi di memori (agar UI langsung responsif) dan menuliskannya
- * ke database Room di latar belakang.
- */
-class IrasViewModel(application: Application) : AndroidViewModel(application) {
+// Typealias untuk menjamin kompatibilitas jika ada bagian kode yang memanggil TrainingSession
+typealias TrainingSession = SessionRecord
 
-    private val repository = IrasRepository(IrasDatabase.get(application).dao())
+class IrasViewModel(application: Application) : AndroidViewModel(application), PoseEstimator.PoseListener {
 
-    // Penulisan ke database dilakukan satu per satu sesuai urutan
-    private val writeLock = Mutex()
+    private val repository: IrasRepository
 
     private val _sessions = MutableStateFlow<List<SessionRecord>>(emptyList())
     val sessions: StateFlow<List<SessionRecord>> = _sessions.asStateFlow()
 
+    // Aliased for compatibility if referenced as allSessions
+    val allSessions: StateFlow<List<SessionRecord>> = sessions
+
     init {
-        // Muat data yang tersimpan saat aplikasi dibuka
+        val db = IrasDatabase.get(application)
+        repository = IrasRepository(db.dao())
+        loadSessions()
+    }
+
+    fun loadSessions() {
         viewModelScope.launch {
-            _sessions.value = markPersonalBest(repository.loadAll())
+            _sessions.value = repository.loadAll()
         }
     }
 
-    /** Membuat sesi baru: roundCount ronde, masing-masing config.shots panah. */
+    // --- Fungsi Manajemen Sesi Database Room ---
     fun createSession(config: SessionConfig, roundCount: Int) {
         viewModelScope.launch {
-            val now = System.currentTimeMillis()
-            val date = SimpleDateFormat("dd MMM yyyy", Locale("id", "ID")).format(Date(now))
-            val id = writeLock.withLock {
-                repository.create(
-                    date = date,
-                    distance = config.distance,
-                    location = config.location,
-                    roundCount = roundCount,
-                    capacity = config.shots,
-                    createdAt = now
-                )
-            }
-            val newSession = SessionRecord(
-                id = id,
-                date = date,
+            val formatter = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
+            val dateStr = formatter.format(Date())
+            repository.create(
+                date = dateStr,
                 distance = config.distance,
                 location = config.location,
-                rounds = (1..roundCount).map { number ->
-                    RoundRecord(number = number, arrows = emptyList(), capacity = config.shots)
-                },
-                isPB = false
+                roundCount = roundCount,
+                capacity = config.shots,
+                createdAt = System.currentTimeMillis()
             )
-            _sessions.update { markPersonalBest(listOf(newSession) + it) }
+            loadSessions()
         }
     }
 
-    /** Dipanggil setiap skor berubah: UI diperbarui seketika, database menyusul. */
-    fun updateSession(updated: SessionRecord) {
-        _sessions.update { list ->
-            markPersonalBest(list.map { if (it.id == updated.id) updated else it })
-        }
+    fun updateSession(session: SessionRecord) {
         viewModelScope.launch {
-            writeLock.withLock { repository.save(updated) }
+            repository.save(session)
+            loadSessions()
         }
     }
 
-    fun deleteSession(id: Int) {
-        _sessions.update { list -> markPersonalBest(list.filterNot { it.id == id }) }
+    fun deleteSession(sessionId: Int) {
         viewModelScope.launch {
-            writeLock.withLock { repository.delete(id) }
+            repository.delete(sessionId)
+            loadSessions()
         }
     }
 
-    /**
-     * Personal Best = sesi dengan rasio skor tertinggi (jika seri, sesi yang paling lama).
-     * Daftar diurutkan dari yang terbaru, jadi indeks yang lebih besar berarti lebih lama.
-     */
-    private fun markPersonalBest(list: List<SessionRecord>): List<SessionRecord> {
-        val bestIndex = list.indices
-            .filter { list[it].maxScore > 0 && list[it].score > 0 }
-            .maxWithOrNull(
-                compareBy<Int> { list[it].score.toFloat() / list[it].maxScore }
-                    .thenBy { it }
-            )
-        return list.mapIndexed { index, session -> session.copy(isPB = index == bestIndex) }
+    fun deleteSession(session: SessionRecord) {
+        deleteSession(session.id)
+    }
+
+    // --- Logika AI & Biomekanika ---
+    private val calculator = BiomechanicsCalculator(isRightHanded = true)
+    private val smoother = FeatureSmoother(alpha = 0.5f)
+    private val evaluator = TechniqueEvaluator()
+
+    private val _evaluationState = MutableStateFlow<TechniqueEvaluation?>(null)
+    val evaluationState: StateFlow<TechniqueEvaluation?> = _evaluationState.asStateFlow()
+
+    // Frame terakhir beserta geometrinya, dipakai overlay skeleton agar sejajar
+    // dengan preview kamera (crop FILL_CENTER, rotasi, dan mirror).
+    private val _currentFrame = MutableStateFlow<PoseFrame?>(null)
+    val currentFrame: StateFlow<PoseFrame?> = _currentFrame.asStateFlow()
+
+    private var currentWind: WindSnapshot? = null
+
+    fun updateWindData(wind: WindSnapshot) {
+        currentWind = wind
+    }
+
+    override fun onPoseDetected(frame: PoseFrame, timestampMs: Long) {
+        // Callback MediaPipe sudah berjalan berurutan di thread result listener,
+        // jadi update StateFlow dilakukan langsung agar frame tidak tertukar urutan.
+        _currentFrame.value = frame
+
+        val rawFeatures = calculator.extractFeatures(frame.landmarks, timestampMs)
+        val smoothedFeatures = smoother.smooth(rawFeatures)
+        _evaluationState.value = evaluator.evaluate(smoothedFeatures, currentWind)
+    }
+
+    override fun onError(error: String) {
+        _currentFrame.value = null
+        smoother.reset()
+    }
+
+    fun resetSession() {
+        _currentFrame.value = null
+        smoother.reset()
+        _evaluationState.value = null
+        currentWind = null
     }
 }

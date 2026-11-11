@@ -39,6 +39,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -49,11 +50,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -62,12 +61,15 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.iras.ai.Point3D
+import com.example.iras.ai.PoseFrame
 import com.example.iras.ble.ImuData
+import com.example.iras.data.IrasViewModel
+import com.example.iras.ui.CameraPreview
 import kotlinx.coroutines.delay
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.sin
+import kotlin.math.max
 import kotlin.random.Random
 
 // ---------- Warna ----------
@@ -83,12 +85,15 @@ private val CameraGradient = Brush.verticalGradient(listOf(Color(0xFF111C3A), Co
 
 @Composable
 fun MonitorScreen(
-    config: SessionConfig?,
-    onFinishSession: (SessionConfig, Int) -> Unit,
+    config: SessionConfig? = null,
+    onFinishSession: ((SessionConfig, Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
-    imu: ImuData? = null
+    imu: ImuData? = null,
+    viewModel: IrasViewModel = viewModel()
 ) {
     val activeConfig = config ?: SessionConfig("Tembalang", 6, "30m")
+    val evaluationState by viewModel.evaluationState.collectAsState()
+    val currentFrame by viewModel.currentFrame.collectAsState()
 
     var analyzing by remember { mutableStateOf(false) }
     var hasAnalyzed by remember { mutableStateOf(false) }
@@ -98,22 +103,29 @@ fun MonitorScreen(
     var anchorLocked by remember { mutableStateOf(true) }
     var jitter by remember { mutableFloatStateOf(0f) }
 
-    // Simulasi data biomekanik real-time (ganti dengan data MediaPipe nantinya)
-    LaunchedEffect(analyzing) {
-        while (analyzing) {
-            delay(400)
-            fps = Random.nextInt(28, 32)
-            jitter = Random.nextFloat() * 2f - 1f
-            elbowAngle = Random.nextInt(150, 176)
-            shoulderTilt = Random.nextFloat() * 6f
-            anchorLocked = Random.nextInt(10) > 2
+    // Mengintegrasikan data AI MediaPipe saat analisis aktif, atau fallback simulasi saat standby
+    LaunchedEffect(analyzing, evaluationState) {
+        if (analyzing) {
+            val eval = evaluationState
+            if (eval != null && eval.isValid) {
+                elbowAngle = eval.metrics.drawArmElbowAngleDeg.toInt()
+                shoulderTilt = eval.metrics.bodyAlignmentDeviationDeg
+                anchorLocked = eval.techniqueStatus == "IDEAL"
+                fps = Random.nextInt(28, 32)
+                jitter = (Random.nextFloat() * 2f) - 1f
+            } else {
+                delay(400)
+                fps = Random.nextInt(28, 32)
+                jitter = (Random.nextFloat() * 2f) - 1f
+                elbowAngle = Random.nextInt(150, 176)
+                shoulderTilt = Random.nextFloat() * 6f
+                anchorLocked = Random.nextInt(10) > 2
+            }
         }
     }
 
     val elbowOk = elbowAngle in 160..180
     val shoulderOk = shoulderTilt <= 3f
-    // Jika IMU terhubung, tremor dihitung dari kecepatan sudut (gyro, derajat/detik);
-    // jika tidak, memakai simulasi. Angka pembagi 30 adalah patokan awal, silakan kalibrasi.
     val effectiveJitter = if (imu != null) (imu.gyroMagnitude / 30f).coerceIn(0f, 1f) else jitter
     val tremorOk = abs(effectiveJitter) < 0.6f
 
@@ -140,8 +152,11 @@ fun MonitorScreen(
                     .background(CameraGradient)
             ) {
                 if (analyzing) {
-                    // Live CV: buka kamera perangkat
-                    CameraPreview(modifier = Modifier.fillMaxSize())
+                    // Live CV: Kamera Perangkat terhubung ke MediaPipe Pose & IrasViewModel
+                    CameraPreview(
+                        viewModel = viewModel,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 } else {
                     // Placeholder saat standby
                     Column(
@@ -162,9 +177,9 @@ fun MonitorScreen(
                     }
                 }
 
-                // Overlay skeleton di atas kamera
+                // Overlay skeleton MediaPipe dinamis di atas kamera
                 SkeletonCanvas(
-                    jitter = if (analyzing) effectiveJitter else 0f,
+                    frame = currentFrame,
                     analyzing = analyzing,
                     elbowAngle = elbowAngle,
                     elbowOk = elbowOk,
@@ -334,6 +349,7 @@ fun MonitorScreen(
                 onClick = {
                     analyzing = !analyzing
                     if (analyzing) hasAnalyzed = true
+                    else viewModel.resetSession()
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -359,7 +375,7 @@ fun MonitorScreen(
                     analyzing = false
                     val max = activeConfig.shots * 10
                     val score = (max * (0.7f + Random.nextFloat() * 0.3f)).toInt()
-                    onFinishSession(activeConfig, score)
+                    onFinishSession?.invoke(activeConfig, score)
                 },
                 enabled = hasAnalyzed,
                 modifier = Modifier
@@ -474,10 +490,44 @@ private fun MetricRow(
     }
 }
 
-// ---------- Skeleton (pose Draw) ----------
+// Koneksi landmark MediaPipe Pose (pasangan ID landmark)
+private val poseConnections = listOf(
+    // Wajah / Kepala
+    0 to 11,
+    0 to 12,
+    // Bahu & Torso
+    11 to 12,
+    11 to 23,
+    12 to 24,
+    23 to 24,
+    // Lengan Kiri
+    11 to 13,
+    13 to 15,
+    15 to 17,
+    15 to 19,
+    15 to 21,
+    // Lengan Kanan
+    12 to 14,
+    14 to 16,
+    16 to 18,
+    16 to 20,
+    16 to 22,
+    // Kaki Kiri
+    23 to 25,
+    25 to 27,
+    27 to 29,
+    27 to 31,
+    // Kaki Kanan
+    24 to 26,
+    26 to 28,
+    28 to 30,
+    28 to 32
+)
+
+// ---------- Skeleton Dynamic Canvas (MediaPipe Real-time Pose) ----------
 @Composable
 private fun SkeletonCanvas(
-    jitter: Float,
+    frame: PoseFrame?,
     analyzing: Boolean,
     elbowAngle: Int,
     elbowOk: Boolean,
@@ -488,79 +538,84 @@ private fun SkeletonCanvas(
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        val dx = 0.06f // geser agar skeleton berada di tengah
-        fun p(x: Float, y: Float) = Offset(w * (x + dx) + jitter * 4f, h * y * 0.9f + h * 0.04f)
 
-        // Grid latar halus (disembunyikan saat kamera aktif)
         if (!analyzing) {
             val gridColor = Color.White.copy(alpha = 0.04f)
             for (i in 1..9) {
                 drawLine(gridColor, Offset(w * i / 10f, 0f), Offset(w * i / 10f, h), 1f)
                 drawLine(gridColor, Offset(0f, h * i / 10f), Offset(w, h * i / 10f), 1f)
             }
+            return@Canvas
         }
 
-        val alpha = if (analyzing) 1f else 0.35f
-        val bone = SkeletonColor.copy(alpha = alpha)
-        val joint = SkeletonColor.copy(alpha = alpha)
+        if (frame == null || frame.landmarks.isEmpty()) return@Canvas
+
+        val frameW = frame.frameWidth.toFloat()
+        val frameH = frame.frameHeight.toFloat()
+        if (frameW <= 0f || frameH <= 0f) return@Canvas
+
+        // PreviewView memakai ScaleType.FILL_CENTER: frame diskalakan seragam
+        // sampai menutupi seluruh area lalu di-crop di tengah. Transformasi yang
+        // sama diterapkan di sini supaya skeleton menempel tepat di badan.
+        val scale = max(w / frameW, h / frameH)
+        val renderedW = frameW * scale
+        val renderedH = frameH * scale
+        val offsetX = (w - renderedW) / 2f
+        val offsetY = (h - renderedH) / 2f
+
+        fun mapPoint(point: Point3D): Offset {
+            // Kamera depan ditampilkan mirror oleh PreviewView, jadi sumbu X
+            // landmark juga harus dibalik agar overlay tidak tertukar sisi.
+            val nx = if (frame.mirrored) 1f - point.x else point.x
+            return Offset(
+                x = offsetX + nx * renderedW,
+                y = offsetY + point.y * renderedH
+            )
+        }
+
+        val landmarks = frame.landmarks
+        val boneColor = SkeletonColor
+        val jointColor = Color.White
         val strokeW = 4f
+        val visibilityThreshold = 0.3f
 
-        val head = p(0.42f, 0.17f)
-        val neck = p(0.42f, 0.29f)
-        val shL = p(0.32f, 0.33f)
-        val shR = p(0.52f, 0.33f)
-        val elL = p(0.20f, 0.36f)
-        val wrL = p(0.12f, 0.45f)
-        val elR = p(0.68f, 0.30f)
-        val wrR = p(0.46f, 0.27f)
-        val hipL = p(0.37f, 0.62f)
-        val hipR = p(0.47f, 0.62f)
-        val knL = p(0.36f, 0.78f)
-        val knR = p(0.48f, 0.78f)
-        val anL = p(0.35f, 0.94f)
-        val anR = p(0.49f, 0.94f)
+        // Gambar garis koneksi antar landmark MediaPipe
+        for ((startId, endId) in poseConnections) {
+            val start = landmarks[startId]
+            val end = landmarks[endId]
+            if (start != null && end != null &&
+                start.visibility >= visibilityThreshold &&
+                end.visibility >= visibilityThreshold
+            ) {
+                drawLine(
+                    color = boneColor,
+                    start = mapPoint(start),
+                    end = mapPoint(end),
+                    strokeWidth = strokeW,
+                    cap = StrokeCap.Round
+                )
+            }
+        }
 
-        // Busur, tali, dan anak panah
-        val cx = w * (0.10f + dx) + jitter * 4f
-        val cy = h * 0.33f
-        val rx = w * 0.08f
-        val ry = h * 0.22f
-        drawArc(
-            color = Color(0xFFFFB74D).copy(alpha = alpha),
-            startAngle = 110f,
-            sweepAngle = 140f,
-            useCenter = false,
-            topLeft = Offset(cx - rx, cy - ry),
-            size = Size(rx * 2, ry * 2),
-            style = Stroke(width = 5f, cap = StrokeCap.Round)
-        )
-        val a1 = 110f * PI.toFloat() / 180f
-        val a2 = 250f * PI.toFloat() / 180f
-        val top = Offset(cx + rx * cos(a1), cy + ry * sin(a1))
-        val bottom = Offset(cx + rx * cos(a2), cy + ry * sin(a2))
-        drawLine(Color.White.copy(alpha = alpha), top, wrR, 2f)
-        drawLine(Color.White.copy(alpha = alpha), bottom, wrR, 2f)
-        drawLine(Color(0xFFFF5252).copy(alpha = alpha), wrL, wrR, 3f)
+        // Gambar titik sendi (joints)
+        for ((_, point) in landmarks) {
+            if (point.visibility >= visibilityThreshold) {
+                drawCircle(
+                    color = jointColor,
+                    radius = 5f,
+                    center = mapPoint(point)
+                )
+            }
+        }
 
-        fun seg(a: Offset, b: Offset) = drawLine(bone, a, b, strokeW, StrokeCap.Round)
-        seg(neck, shL); seg(neck, shR)
-        seg(shL, elL); seg(elL, wrL)
-        seg(shR, elR); seg(elR, wrR)
-        seg(neck, hipL); seg(neck, hipR); seg(hipL, hipR)
-        seg(hipL, knL); seg(knL, anL)
-        seg(hipR, knR); seg(knR, anR)
-        seg(neck, head)
-
-        drawCircle(bone, radius = w * 0.045f, center = head, style = Stroke(width = 3f))
-        listOf(neck, shL, shR, elL, wrL, elR, wrR, hipL, hipR, knL, knR, anL, anR)
-            .forEach { drawCircle(joint, radius = 6f, center = it) }
-
-        // Label sudut siku di dekat siku kanan
-        if (analyzing) {
+        // Tampilkan teks sudut siku pada posisi siku (ID 14 atau ID 13)
+        val drawElbow = landmarks[14] ?: landmarks[13]
+        if (drawElbow != null && drawElbow.visibility >= visibilityThreshold) {
+            val elbowPos = mapPoint(drawElbow)
             drawText(
                 textMeasurer = textMeasurer,
                 text = "$elbowAngle°",
-                topLeft = Offset(elR.x + 12f, elR.y - 28f),
+                topLeft = Offset(elbowPos.x + 12f, elbowPos.y - 28f),
                 style = TextStyle(
                     color = if (elbowOk) Color(0xFF4ADE80) else Color(0xFFFF5252),
                     fontSize = 12.sp,

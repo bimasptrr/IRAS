@@ -50,6 +50,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
 
     // CameraX (Live CV)
     val cameraxVersion = "1.4.0"
