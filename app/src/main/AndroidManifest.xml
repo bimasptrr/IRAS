@@ -29,6 +29,13 @@
         android:name="android.hardware.bluetooth_le"
         android:required="false" />
 
+    <!-- Mesin text-to-speech (suara koreksi), perlu di Android 11+ -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

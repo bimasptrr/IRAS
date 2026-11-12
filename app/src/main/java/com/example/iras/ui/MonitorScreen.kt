@@ -20,10 +20,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraFront
+import androidx.compose.material.icons.filled.CameraRear
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -36,8 +40,11 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,6 +61,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -63,10 +71,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.iras.ai.Point3D
+import com.example.iras.ai.VoiceCoach
+import com.example.iras.ai.VoiceCuePlanner
 import com.example.iras.ai.PoseFrame
 import com.example.iras.ble.ImuData
 import com.example.iras.data.IrasViewModel
 import com.example.iras.ui.CameraPreview
+import android.os.SystemClock
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.max
@@ -96,6 +107,7 @@ fun MonitorScreen(
     val currentFrame by viewModel.currentFrame.collectAsState()
 
     var analyzing by remember { mutableStateOf(false) }
+    var useFrontCamera by remember { mutableStateOf(false) }
     var hasAnalyzed by remember { mutableStateOf(false) }
     var fps by remember { mutableIntStateOf(30) }
     var elbowAngle by remember { mutableIntStateOf(170) }
@@ -121,6 +133,25 @@ fun MonitorScreen(
                 shoulderTilt = Random.nextFloat() * 6f
                 anchorLocked = Random.nextInt(10) > 2
             }
+        }
+    }
+
+    // ---------- Umpan balik suara (TTS) dari hasil koreksi MediaPipe ----------
+    val context = LocalContext.current
+    val voice = remember { VoiceCoach(context) }
+    val planner = remember { VoiceCuePlanner() }
+    val voiceStatus by voice.status.collectAsState()
+    var voiceOn by remember { mutableStateOf(true) }
+    DisposableEffect(Unit) { onDispose { voice.shutdown() } }
+    LaunchedEffect(analyzing, voiceOn) {
+        if (!analyzing || !voiceOn) {
+            voice.stop()
+            planner.reset()
+        }
+    }
+    LaunchedEffect(evaluationState) {
+        if (analyzing && voiceOn) {
+            planner.next(evaluationState, SystemClock.elapsedRealtime())?.let { voice.speak(it) }
         }
     }
 
@@ -155,7 +186,8 @@ fun MonitorScreen(
                     // Live CV: Kamera Perangkat terhubung ke MediaPipe Pose & IrasViewModel
                     CameraPreview(
                         viewModel = viewModel,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        useFrontCamera = useFrontCamera
                     )
                 } else {
                     // Placeholder saat standby
@@ -344,6 +376,84 @@ fun MonitorScreen(
                 fontSize = 12.sp,
                 color = Color(0xFF6B7280)
             )
+
+            // ---------- Pilihan kamera ----------
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                listOf(false to "Kamera Belakang", true to "Kamera Depan").forEach { (front, label) ->
+                    val selected = useFrontCamera == front
+                    val icon = if (front) Icons.Filled.CameraFront else Icons.Filled.CameraRear
+                    val onPick = {
+                        if (!selected) {
+                            useFrontCamera = front
+                            // Hapus frame lama agar skeleton tidak melompat saat kamera berganti
+                            viewModel.resetSession()
+                        }
+                    }
+                    if (selected) {
+                        Button(
+                            onClick = onPick,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = NavyLight)
+                        ) {
+                            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onPick,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // ---------- Suara koreksi ----------
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (voiceOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                    contentDescription = null,
+                    tint = NavyLight
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Suara koreksi", fontSize = 14.sp, color = Color(0xFF374151))
+                    when (voiceStatus) {
+                        VoiceCoach.Status.NO_INDONESIAN -> Text(
+                            "Suara bahasa Indonesia belum terpasang di HP",
+                            fontSize = 11.sp, color = BadColor
+                        )
+                        VoiceCoach.Status.ERROR -> Text(
+                            "Mesin suara (TTS) tidak tersedia",
+                            fontSize = 11.sp, color = BadColor
+                        )
+                        else -> Text(
+                            "Koreksi bagian tubuh dibacakan saat analisis",
+                            fontSize = 11.sp, color = Color(0xFF6B7280)
+                        )
+                    }
+                }
+                if (voiceStatus == VoiceCoach.Status.NO_INDONESIAN) {
+                    TextButton(onClick = { voice.openVoiceInstall(context) }) { Text("Pasang") }
+                }
+                Switch(checked = voiceOn, onCheckedChange = { voiceOn = it })
+            }
 
             Button(
                 onClick = {
