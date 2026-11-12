@@ -83,9 +83,11 @@ fun CameraPreview(
             .build()
     }
 
+    // Kamera depan ditampilkan mirror oleh PreviewView; overlay perlu tahu.
+    LaunchedEffect(useFrontCamera) { poseEstimator.mirrored = useFrontCamera }
+
     LaunchedEffect(granted) {
         if (granted && poseEstimator.poseLandmarker == null) {
-            poseEstimator.mirrored = useFrontCamera
             try {
                 // Memuat model tidak dilakukan di main thread agar UI tidak macet.
                 withContext(Dispatchers.IO) { poseEstimator.setup() }
@@ -140,54 +142,56 @@ fun CameraPreview(
         return
     }
 
+    // Preview dibuat sekali; kamera (depan/belakang) di-bind ulang saat pilihan berubah.
+    val preview = remember {
+        Preview.Builder().setResolutionSelector(resolutionSelector).build()
+    }
+    val boundCamera = remember { arrayOfNulls<Boolean>(1) }
+
     AndroidView(
         modifier = modifier.fillMaxSize(),
         factory = { ctx ->
             val previewView = PreviewView(ctx).apply {
                 scaleType = PreviewView.ScaleType.FILL_CENTER
             }
-            val providerFuture = ProcessCameraProvider.getInstance(ctx)
-            providerFuture.addListener({
-                val provider = providerFuture.get()
+            preview.setSurfaceProvider(previewView.surfaceProvider)
 
-                // 1. Camera Preview Use Case
-                val preview = Preview.Builder()
-                    .setResolutionSelector(resolutionSelector)
-                    .build()
-                    .also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-
-                // 2. Image Analysis Use Case (Frame Streaming ke MediaPipe)
-                // Samakan orientasi frame analisis dengan orientasi preview.
-                previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                    previewView.display?.let { display ->
-                        if (analysisUseCase.targetRotation != display.rotation) {
-                            analysisUseCase.targetRotation = display.rotation
-                        }
+            // Samakan orientasi frame analisis dengan orientasi preview.
+            previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                previewView.display?.let { display ->
+                    if (analysisUseCase.targetRotation != display.rotation) {
+                        analysisUseCase.targetRotation = display.rotation
                     }
                 }
-                analysisUseCase.targetRotation =
-                    previewView.display?.rotation ?: Surface.ROTATION_0
-
-                val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
-                else CameraSelector.DEFAULT_BACK_CAMERA
-
-                try {
-                    provider.unbindAll()
-                    // Bind Preview dan ImageAnalysis secara bersamaan ke Lifecycle
-                    provider.bindToLifecycle(
-                        lifecycleOwner,
-                        selector,
-                        preview,
-                        analysisUseCase
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }, ContextCompat.getMainExecutor(ctx))
-
+            }
+            analysisUseCase.targetRotation =
+                previewView.display?.rotation ?: Surface.ROTATION_0
             previewView
+        },
+        update = { previewView ->
+            if (boundCamera[0] != useFrontCamera) {
+                boundCamera[0] = useFrontCamera
+                val ctx = previewView.context
+                val providerFuture = ProcessCameraProvider.getInstance(ctx)
+                providerFuture.addListener({
+                    val provider = providerFuture.get()
+                    val wantedFront = boundCamera[0] == true
+                    val selector = if (wantedFront) CameraSelector.DEFAULT_FRONT_CAMERA
+                    else CameraSelector.DEFAULT_BACK_CAMERA
+                    try {
+                        if (!provider.hasCamera(selector)) return@addListener
+                        provider.unbindAll()
+                        provider.bindToLifecycle(
+                            lifecycleOwner,
+                            selector,
+                            preview,
+                            analysisUseCase
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }, ContextCompat.getMainExecutor(ctx))
+            }
         }
     )
 }
