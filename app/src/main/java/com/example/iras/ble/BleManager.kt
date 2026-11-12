@@ -165,6 +165,10 @@ class BleManager(context: Context) {
     private val _raw = MutableStateFlow<RawPacket?>(null)
     val raw: StateFlow<RawPacket?> = _raw.asStateFlow()
 
+    /** Level baterai terbaru dari perangkat (null = belum ada). Format baris: "BAT,87,4.05". */
+    private val _battery = MutableStateFlow<BatteryData?>(null)
+    val battery: StateFlow<BatteryData?> = _battery.asStateFlow()
+
     /** Jumlah paket yang diterima sejak tersambung. */
     private val _packetCount = MutableStateFlow(0)
     val packetCount: StateFlow<Int> = _packetCount.asStateFlow()
@@ -297,6 +301,7 @@ class BleManager(context: Context) {
         subscribedUuids.clear()
         assemblers.clear()
         _imu.value = null
+        _battery.value = null
         _raw.value = null
         _packetCount.value = 0
         _statusText.value = null
@@ -352,6 +357,7 @@ class BleManager(context: Context) {
                     if (gatt === g) gatt = null
                     synchronized(subscribeQueue) { subscribeQueue.clear() }
                     _imu.value = null
+                    _battery.value = null
                     _statusText.value = null
                     _wind.value = null
                     _state.value = if (userDisconnect || status == BluetoothGatt.GATT_SUCCESS) {
@@ -474,6 +480,21 @@ class BleManager(context: Context) {
         val assembler = assemblers.getOrPut(uuid) { PacketAssembler() }
         for (payload in assembler.feed(bytes)) {
             val now = System.currentTimeMillis()
+
+            // Baris baterai ("BAT,87,4.05") dicek paling awal: angkanya mirip paket sudut IMU 2 nilai
+            val batteryData = BatteryPacketParser.parse(payload, now)
+            if (batteryData != null) {
+                _battery.value = batteryData
+                _raw.value = RawPacket(
+                    characteristic = uuid.toString(),
+                    text = ImuPacketParser.describe(payload),
+                    size = payload.size,
+                    parsed = true,
+                    timestamp = now
+                )
+                _packetCount.value = _packetCount.value + 1
+                continue
+            }
 
             // Paket angin dicek lebih dulu: angkanya mirip paket IMU 2 nilai
             val windData = WindPacketParser.parse(payload, now)

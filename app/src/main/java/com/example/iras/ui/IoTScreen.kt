@@ -122,6 +122,7 @@ fun IoTScreen(
     val movementHistory by ble.movementHistory.collectAsState()
     val movementCount by ble.movementCount.collectAsState()
     val latestImu by rememberUpdatedState(imu)
+    val imuBatteryData by ble.battery.collectAsState()
 
     // Node sensor angin: koneksi BLE kedua, terpisah dari wearable IMU
     val windState by bleWind.state.collectAsState()
@@ -129,6 +130,7 @@ fun IoTScreen(
     val wind by bleWind.wind.collectAsState()
     val windHistory by bleWind.windHistory.collectAsState()
     val windMax by bleWind.windMax.collectAsState()
+    val windBatteryData by bleWind.battery.collectAsState()
     val windConnected = windState as? BleState.Connected
     val windConnecting = windState is BleState.Connecting
     val windOn = windConnected != null && wind != null
@@ -319,9 +321,10 @@ fun IoTScreen(
             }
 
             BatteryCard(
-                imuBattery = imuBattery,
+                // Baris "BAT,<persen>,<volt>" dari ESP32 didahulukan; paket 9 angka sebagai cadangan
+                imuBattery = imuBatteryData?.percent ?: imuBattery,
                 imuOn = imuOn,
-                windBattery = null,   // firmware node angin belum mengirim level baterai
+                windBattery = windBatteryData?.percent,   // terisi jika node angin juga mengirim baris BAT
                 windOn = windOn
             )
 
