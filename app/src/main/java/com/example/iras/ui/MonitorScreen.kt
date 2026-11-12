@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Refresh
@@ -45,6 +46,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,8 +79,14 @@ import com.example.iras.ai.PoseFrame
 import com.example.iras.ble.ImuData
 import com.example.iras.data.IrasViewModel
 import com.example.iras.ui.CameraPreview
+import com.example.iras.ui.MonitorRecorder
+import com.example.iras.ui.SavedVideo
+import com.example.iras.ui.playVideo
+import com.example.iras.ui.saveVideoToGallery
 import android.os.SystemClock
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.random.Random
@@ -108,6 +116,20 @@ fun MonitorScreen(
 
     var analyzing by remember { mutableStateOf(false) }
     var useFrontCamera by remember { mutableStateOf(false) }
+
+    // ---------- Rekam video (opsional) ----------
+    val recorder = remember { MonitorRecorder() }
+    val scope = rememberCoroutineScope()
+    var recordOn by remember { mutableStateOf(false) }
+    var recordedFile by remember { mutableStateOf<File?>(null) }
+    var savedVideo by remember { mutableStateOf<SavedVideo?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) { onDispose { recorder.stop() } }
+    fun stopAnalysis() {
+        recorder.stop()
+        analyzing = false
+    }
     var hasAnalyzed by remember { mutableStateOf(false) }
     var fps by remember { mutableIntStateOf(30) }
     var elbowAngle by remember { mutableIntStateOf(170) }
@@ -187,7 +209,13 @@ fun MonitorScreen(
                     CameraPreview(
                         viewModel = viewModel,
                         modifier = Modifier.fillMaxSize(),
-                        useFrontCamera = useFrontCamera
+                        useFrontCamera = useFrontCamera,
+                        videoCapture = if (recordOn) recorder.videoCapture else null,
+                        onCameraBound = {
+                            if (recordOn && !recorder.isRecording) {
+                                recorder.start(context) { file -> recordedFile = file }
+                            }
+                        }
                     )
                 } else {
                     // Placeholder saat standby
@@ -386,7 +414,7 @@ fun MonitorScreen(
                     val selected = useFrontCamera == front
                     val icon = if (front) Icons.Filled.CameraFront else Icons.Filled.CameraRear
                     val onPick = {
-                        if (!selected) {
+                        if (!selected && !(analyzing && recordOn)) {
                             useFrontCamera = front
                             // Hapus frame lama agar skeleton tidak melompat saat kamera berganti
                             viewModel.resetSession()
@@ -395,6 +423,7 @@ fun MonitorScreen(
                     if (selected) {
                         Button(
                             onClick = onPick,
+                            enabled = !(analyzing && recordOn),
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = NavyLight)
@@ -406,12 +435,114 @@ fun MonitorScreen(
                     } else {
                         OutlinedButton(
                             onClick = onPick,
+                            enabled = !(analyzing && recordOn),
                             modifier = Modifier.weight(1f).height(46.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // ---------- Rekam video (opsional) ----------
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Filled.Videocam, contentDescription = null, tint = NavyLight)
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Rekam video", fontSize = 14.sp, color = Color(0xFF374151))
+                    Text(
+                        when {
+                            analyzing && recordOn -> "Sedang merekam... (kamera dikunci)"
+                            analyzing -> "Aktifkan sebelum menekan MULAI ANALISIS"
+                            else -> "Opsional. Anda memilih simpan atau buang setelah analisis"
+                        },
+                        fontSize = 11.sp,
+                        color = if (analyzing && recordOn) BadColor else Color(0xFF6B7280)
+                    )
+                }
+                Switch(
+                    checked = recordOn,
+                    onCheckedChange = { recordOn = it },
+                    enabled = !analyzing
+                )
+            }
+
+            // ---------- Hasil rekaman: Simpan / Buang ----------
+            val pending = recordedFile
+            val saved = savedVideo
+            if (pending != null || saved != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    border = BorderStroke(1.dp, BorderGrey)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        if (saved != null) {
+                            Text("Video tersimpan", fontWeight = FontWeight.Bold, color = GoodColor)
+                            Text(saved.where, fontSize = 12.sp, color = Color(0xFF6B7280))
+                            Row(
+                                modifier = Modifier.padding(top = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                if (saved.uri != null) {
+                                    Button(onClick = { playVideo(context, saved.uri) }) { Text("Putar") }
+                                }
+                                OutlinedButton(onClick = { savedVideo = null }) { Text("Tutup") }
+                            }
+                        } else if (pending != null) {
+                            val mb = pending.length() / (1024f * 1024f)
+                            Text(
+                                "Video rekaman siap (${"%.1f".format(mb)} MB)",
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF111827)
+                            )
+                            Text(
+                                if (saveError) "Gagal menyimpan. Coba lagi atau buang."
+                                else "Simpan ke HP, atau buang jika tidak diperlukan. Selesaikan pilihan ini sebelum menyelesaikan sesi.",
+                                fontSize = 12.sp,
+                                color = if (saveError) BadColor else Color(0xFF6B7280)
+                            )
+                            Row(
+                                modifier = Modifier.padding(top = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    enabled = !saving,
+                                    onClick = {
+                                        scope.launch {
+                                            saving = true
+                                            saveError = false
+                                            val result = saveVideoToGallery(context, pending)
+                                            saving = false
+                                            if (result != null) {
+                                                savedVideo = result
+                                                recordedFile = null
+                                            } else {
+                                                saveError = true
+                                            }
+                                        }
+                                    }
+                                ) { Text(if (saving) "Menyimpan..." else "Simpan ke HP") }
+                                OutlinedButton(
+                                    enabled = !saving,
+                                    onClick = {
+                                        pending.delete()
+                                        recordedFile = null
+                                        saveError = false
+                                    }
+                                ) { Text("Buang") }
+                            }
                         }
                     }
                 }
@@ -457,9 +588,18 @@ fun MonitorScreen(
 
             Button(
                 onClick = {
-                    analyzing = !analyzing
-                    if (analyzing) hasAnalyzed = true
-                    else viewModel.resetSession()
+                    if (!analyzing) {
+                        // Rekaman lama yang belum disimpan dibuang saat analisis baru dimulai
+                        recordedFile?.delete()
+                        recordedFile = null
+                        savedVideo = null
+                        saveError = false
+                        analyzing = true
+                        hasAnalyzed = true
+                    } else {
+                        stopAnalysis()
+                        viewModel.resetSession()
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -482,7 +622,10 @@ fun MonitorScreen(
 
             OutlinedButton(
                 onClick = {
-                    analyzing = false
+                    val busy = recorder.isRecording
+                    stopAnalysis()
+                    // Jika ada video yang belum disimpan/dibuang, tetap di halaman ini dulu
+                    if (busy || recordedFile != null) return@OutlinedButton
                     val max = activeConfig.shots * 10
                     val score = (max * (0.7f + Random.nextFloat() * 0.3f)).toInt()
                     onFinishSession?.invoke(activeConfig, score)

@@ -11,6 +11,8 @@ import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.Recorder
+import androidx.camera.video.VideoCapture
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -49,7 +51,10 @@ import java.util.concurrent.Executors
 fun CameraPreview(
     viewModel: IrasViewModel,
     modifier: Modifier = Modifier,
-    useFrontCamera: Boolean = false
+    useFrontCamera: Boolean = false,
+    // Jika diisi, video ikut di-bind ke kamera (untuk merekam). onCameraBound dipanggil setelah terpasang.
+    videoCapture: VideoCapture<Recorder>? = null,
+    onCameraBound: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -146,7 +151,7 @@ fun CameraPreview(
     val preview = remember {
         Preview.Builder().setResolutionSelector(resolutionSelector).build()
     }
-    val boundCamera = remember { arrayOfNulls<Boolean>(1) }
+    val boundCamera = remember { arrayOfNulls<String>(1) }
 
     AndroidView(
         modifier = modifier.fillMaxSize(),
@@ -169,24 +174,36 @@ fun CameraPreview(
             previewView
         },
         update = { previewView ->
-            if (boundCamera[0] != useFrontCamera) {
-                boundCamera[0] = useFrontCamera
+            val key = "$useFrontCamera-${videoCapture != null}"
+            if (boundCamera[0] != key) {
+                boundCamera[0] = key
                 val ctx = previewView.context
                 val providerFuture = ProcessCameraProvider.getInstance(ctx)
                 providerFuture.addListener({
                     val provider = providerFuture.get()
-                    val wantedFront = boundCamera[0] == true
+                    val wantedFront = useFrontCamera
                     val selector = if (wantedFront) CameraSelector.DEFAULT_FRONT_CAMERA
                     else CameraSelector.DEFAULT_BACK_CAMERA
                     try {
                         if (!provider.hasCamera(selector)) return@addListener
                         provider.unbindAll()
-                        provider.bindToLifecycle(
-                            lifecycleOwner,
-                            selector,
-                            preview,
-                            analysisUseCase
-                        )
+                        if (videoCapture != null) {
+                            provider.bindToLifecycle(
+                                lifecycleOwner,
+                                selector,
+                                preview,
+                                analysisUseCase,
+                                videoCapture
+                            )
+                        } else {
+                            provider.bindToLifecycle(
+                                lifecycleOwner,
+                                selector,
+                                preview,
+                                analysisUseCase
+                            )
+                        }
+                        onCameraBound()
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
