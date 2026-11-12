@@ -169,6 +169,10 @@ class BleManager(context: Context) {
     private val _battery = MutableStateFlow<BatteryData?>(null)
     val battery: StateFlow<BatteryData?> = _battery.asStateFlow()
 
+    /** Detak jantung terbaru (null = belum ada). Format baris: "BPM,76"; "BPM,0" = tidak terdeteksi. */
+    private val _heartRate = MutableStateFlow<HeartRateData?>(null)
+    val heartRate: StateFlow<HeartRateData?> = _heartRate.asStateFlow()
+
     /** Jumlah paket yang diterima sejak tersambung. */
     private val _packetCount = MutableStateFlow(0)
     val packetCount: StateFlow<Int> = _packetCount.asStateFlow()
@@ -302,6 +306,7 @@ class BleManager(context: Context) {
         assemblers.clear()
         _imu.value = null
         _battery.value = null
+        _heartRate.value = null
         _raw.value = null
         _packetCount.value = 0
         _statusText.value = null
@@ -358,6 +363,7 @@ class BleManager(context: Context) {
                     synchronized(subscribeQueue) { subscribeQueue.clear() }
                     _imu.value = null
                     _battery.value = null
+                    _heartRate.value = null
                     _statusText.value = null
                     _wind.value = null
                     _state.value = if (userDisconnect || status == BluetoothGatt.GATT_SUCCESS) {
@@ -485,6 +491,21 @@ class BleManager(context: Context) {
             val batteryData = BatteryPacketParser.parse(payload, now)
             if (batteryData != null) {
                 _battery.value = batteryData
+                _raw.value = RawPacket(
+                    characteristic = uuid.toString(),
+                    text = ImuPacketParser.describe(payload),
+                    size = payload.size,
+                    parsed = true,
+                    timestamp = now
+                )
+                _packetCount.value = _packetCount.value + 1
+                continue
+            }
+
+            // Baris detak jantung ("BPM,76"), sama alasannya dengan baris baterai
+            val heartData = HeartRatePacketParser.parse(payload, now)
+            if (heartData != null) {
+                _heartRate.value = heartData
                 _raw.value = RawPacket(
                     characteristic = uuid.toString(),
                     text = ImuPacketParser.describe(payload),

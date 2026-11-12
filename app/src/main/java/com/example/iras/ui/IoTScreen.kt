@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -52,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -123,6 +125,15 @@ fun IoTScreen(
     val movementCount by ble.movementCount.collectAsState()
     val latestImu by rememberUpdatedState(imu)
     val imuBatteryData by ble.battery.collectAsState()
+    val heartData by ble.heartRate.collectAsState()
+    // Jam yang berdetak tiap detik agar data detak jantung yang basi (>6 dtk) tampil "--"
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
 
     // Node sensor angin: koneksi BLE kedua, terpisah dari wearable IMU
     val windState by bleWind.state.collectAsState()
@@ -319,6 +330,11 @@ fun IoTScreen(
             if (windConnected != null) {
                 WindCard(wind = wind, history = windHistory, maxSpeed = windMax)
             }
+
+            HeartRateCard(
+                bpm = heartData?.takeIf { it.isValid && nowMs - it.timestamp <= HEART_STALE_MS }?.bpm,
+                sensorOn = imuOn && heartData != null && nowMs - heartData!!.timestamp <= HEART_STALE_MS
+            )
 
             BatteryCard(
                 // Baris "BAT,<persen>,<volt>" dari ESP32 didahulukan; paket 9 angka sebagai cadangan
@@ -583,6 +599,99 @@ private fun DeviceCard(
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                 )
+            }
+        }
+    }
+}
+
+// ---------- Kartu detak jantung ----------
+private const val HEART_STALE_MS = 6_000L
+
+@Composable
+private fun HeartRateCard(bpm: Int?, sensorOn: Boolean) {
+    val (zone, color) = when {
+        bpm == null -> "Tidak terdeteksi" to GreyText
+        bpm < 60 -> "Rendah" to BlueValue
+        bpm <= 100 -> "Normal" to GoodColor
+        bpm <= 140 -> "Meningkat" to WarnColor
+        else -> "Tinggi" to BadColor
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB))
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(HeaderGradient)
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.Favorite,
+                    contentDescription = null,
+                    tint = Color(0xFFFCA5A5),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "DETAK JANTUNG",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (sensorOn) "SENSOR AKTIF" else "SENSOR OFF",
+                    color = if (sensorOn) Color(0xFF86EFAC) else Color(0xFFCBD5E1),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(
+                            bpm?.toString() ?: "--",
+                            fontSize = 40.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = color
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "BPM",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = GreyText,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                    if (bpm == null && sensorOn) {
+                        Text(
+                            "Tempelkan sensor ke jari/kulit dan tahan tetap diam.",
+                            fontSize = 11.sp,
+                            color = GreyText
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(color.copy(alpha = 0.12f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(zone, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = color)
+                }
             }
         }
     }
