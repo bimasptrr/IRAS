@@ -20,8 +20,6 @@ class PoseImageAnalyzer(
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
             val bitmap = imageProxy.toBitmap()
 
-            // Putar frame ke orientasi layar agar koordinat landmark sejajar
-            // dengan gambar kamera yang ditampilkan PreviewView.
             val uprightBitmap = if (rotationDegrees == 0) {
                 bitmap
             } else {
@@ -38,7 +36,6 @@ class PoseImageAnalyzer(
                 )
             }
 
-            // MediaPipe menormalkan koordinat terhadap bitmap yang diputar ini.
             onFrameGeometry(uprightBitmap.width, uprightBitmap.height)
 
             val mpImage = BitmapImageBuilder(uprightBitmap).build()

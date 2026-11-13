@@ -3,42 +3,15 @@ package com.example.iras.ai
 class TechniqueEvaluator {
 
     companion object {
-        /**
-         * Ambang biomekanik.
-         *
-         * Acuan coach (penting): siku lengan penarik saat anchor harus berada
-         * di antara "bawah hidung sampai dagu". Karena itu posisi siku diukur
-         * RELATIF WAJAH, bukan sudut terhadap bahu. Skala: 0 = setinggi ujung
-         * hidung, 1 = setinggi dagu.
-         *
-         * Sudut siku lengan penarik di anchor cukup terlipat: sekitar 27
-         * derajat untuk gaya siku tinggi (anchor di bawah dagu) sampai 43
-         * derajat untuk anchor biasa di rahang. Jauh di bawah 155-175 derajat
-         * seperti lengan busur yang hampir lurus.
-         */
+
         const val DRAW_ELBOW_MIN_DEG = 20f
         const val DRAW_ELBOW_MAX_DEG = 60f
-
-        /**
-         * Rentang posisi siku penarik terhadap wajah.
-         * Nominal coach 0 sampai 1, dilebihkan sedikit untuk menutup getaran
-         * landmark MediaPipe.
-         */
         const val DRAW_ELBOW_FACE_MIN = -0.15f
         const val DRAW_ELBOW_FACE_MAX = 1.15f
-
-        /**
-         * Posisi tangan penarik (anchor) terhadap wajah: dari sedikit di bawah
-         * ujung hidung sampai di bawah dagu, yaitu area rahang.
-         */
         const val ANCHOR_FACE_MIN = 0.3f
         const val ANCHOR_FACE_MAX = 1.6f
-
-        /** Lengan busur harus hampir lurus. */
         const val BOW_ELBOW_MIN_DEG = 160f
         const val BOW_ELBOW_MAX_DEG = 178f
-
-        /** Batas kemiringan bahu terhadap pinggul, dan kaki terhadap pinggul. */
         const val ALIGNMENT_MAX_DEG = 8f
         const val STANCE_MAX_DEG = 10f
     }
@@ -61,8 +34,6 @@ class TechniqueEvaluator {
         val issues = mutableListOf<FeedbackIssue>()
         var feedbackText = "Posisi ideal."
 
-        // Posisi siku terhadap wajah dicek lebih dulu: ini koreksi yang paling
-        // sering disebut coach ("siku antara bawah hidung sampai dagu").
         features.drawElbowFaceRatio?.let { ratio ->
             if (ratio < DRAW_ELBOW_FACE_MIN) {
                 issues.add(FeedbackIssue("DRAW_ELBOW_TOO_HIGH", "WARNING", "Siku lengan penarik terlalu tinggi."))

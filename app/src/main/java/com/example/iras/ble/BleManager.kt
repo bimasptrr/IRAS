@@ -22,13 +22,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
-/** Satu kejadian gerakan yang dikirim wearable (mis. "Diam", atau teks gerakan lain). */
 data class MovementEvent(val text: String, val timestamp: Long) {
-    /** true bila teks berarti sensor sedang diam. */
     val isStill: Boolean get() = text.trim().equals("diam", ignoreCase = true)
 }
 
-/** Satu bacaan dari node sensor angin: "kecepatan,kategori,arah_teks,derajat". */
 data class WindData(
     val speed: Float,        // m/s
     val category: String,    // Tenang, Sepoi-sepoi, Agak Kencang, Kencang, Sangat Kencang
@@ -39,7 +36,6 @@ data class WindData(
     val directionOk: Boolean get() = degrees >= 0f && !direction.equals("Error", ignoreCase = true)
 }
 
-/** Perubahan kondisi angin (kategori atau arah berubah) untuk riwayat. */
 data class WindEvent(
     val category: String,
     val direction: String,
@@ -48,7 +44,6 @@ data class WindEvent(
 )
 
 object WindPacketParser {
-    /** Mengurai satu baris teks; null bila bukan format angin. */
     fun parse(bytes: ByteArray, now: Long): WindData? {
         if (!ImuPacketParser.isPrintable(bytes)) return null
         val parts = String(bytes, Charsets.UTF_8).trim().split(",").map { it.trim() }
@@ -95,17 +90,6 @@ data class BleDevice(
     val isIras: Boolean
 )
 
-/**
- * Mengelola Bluetooth Low Energy untuk ESP32 APA SAJA:
- *  1. memindai semua perangkat BLE (tanpa filter),
- *  2. menyambung ke perangkat yang dipilih,
- *  3. mengaktifkan notifikasi pada SEMUA characteristic yang bisa notify/indicate
- *     (UUID tidak harus sama dengan sketch IRAS),
- *  4. membaca setiap paket: jika berisi angka x,y,z (teks atau float32) -> [imu].
- * Paket mentah selalu disimpan di [raw] agar bisa diperiksa bila data tidak terbaca.
- *
- * Izin Bluetooth harus sudah diberikan sebelum startScan() dipanggil (lihat IoTScreen).
- */
 @SuppressLint("MissingPermission")
 class BleManager(context: Context) {
 

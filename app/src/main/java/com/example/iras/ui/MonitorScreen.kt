@@ -544,24 +544,6 @@ fun MonitorScreen(
                 }
             }
 
-            // ---------- Catatan posisi kamera ----------
-            Text(
-                "Sudut siku dan posisi siku terbaca paling akurat saat HP di samping " +
-                        "pemanah. Kemiringan bahu dan kaki justru hanya terbaca dari depan.",
-                fontSize = 11.sp,
-                color = Color(0xFF6B7280),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "Posisi siku diukur relatif wajah: 0% = ujung hidung, 100% = dagu. " +
-                        "Target coach: siku antara bawah hidung sampai dagu.",
-                fontSize = 11.sp,
-                color = Color(0xFF6B7280),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
-
             // ---------- Tangan penarik ----------
             Row(
                 modifier = Modifier

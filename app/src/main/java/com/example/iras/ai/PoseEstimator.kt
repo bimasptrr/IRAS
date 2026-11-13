@@ -11,13 +11,8 @@ class PoseEstimator(private val context: Context, private val listener: PoseList
 
     var poseLandmarker: PoseLandmarker? = null
         private set
-
-    // Geometri frame terakhir yang dikirim analyzer. Dipakai agar overlay bisa
-    // memetakan landmark dengan crop/rotasi yang sama seperti preview kamera.
     @Volatile private var frameWidth: Int = 0
     @Volatile private var frameHeight: Int = 0
-
-    /** true bila frame berasal dari kamera depan (PreviewView me-mirror tampilannya). */
     @Volatile var mirrored: Boolean = false
 
     interface PoseListener {

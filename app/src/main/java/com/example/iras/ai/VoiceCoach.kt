@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
-/** Pembungkus TextToSpeech Android (bahasa Indonesia) untuk umpan balik suara. */
 class VoiceCoach(context: Context) {
 
     enum class Status { INIT, READY, NO_INDONESIAN, ERROR }
@@ -57,7 +56,6 @@ class VoiceCoach(context: Context) {
         tts = null
     }
 
-    /** Membuka layar pemasangan data suara (dipakai bila bahasa Indonesia belum ada). */
     fun openVoiceInstall(context: Context) {
         try {
             context.startActivity(
@@ -65,7 +63,6 @@ class VoiceCoach(context: Context) {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         } catch (_: Exception) {
-            // Tidak ada layar pemasangan di perangkat ini; pengguna perlu memasang dari Setelan.
         }
     }
 }

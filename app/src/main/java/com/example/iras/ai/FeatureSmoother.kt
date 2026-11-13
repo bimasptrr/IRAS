@@ -1,16 +1,8 @@
 package com.example.iras.ai
 
-/**
- * Menghaluskan nilai metrik antar frame.
- *
- * Metrik yang sempat tidak terbaca ditahan sebentar supaya tampilan tidak
- * berkedip, tetapi setelah terlalu lama tidak terbaca nilainya dikosongkan
- * agar app tidak menampilkan data basi seolah-olah masih live.
- */
 class FeatureSmoother(private val alpha: Float = 0.5f) {
 
     companion object {
-        /** Jumlah frame berturut-turut tanpa data sebelum metrik dikosongkan. */
         private const val MAX_MISSES = 15
     }
 
