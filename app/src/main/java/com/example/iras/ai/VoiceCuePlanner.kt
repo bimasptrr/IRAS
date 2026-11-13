@@ -20,10 +20,15 @@ class VoiceCuePlanner(
 
     // Urutan = prioritas (paling atas dibahas lebih dulu)
     private val cues: LinkedHashMap<String, Cue> = linkedMapOf(
-        "INVALID" to Cue("Postur tidak terlihat jelas. Sesuaikan posisi kamera."),
-        "DRAW_ARM_LOW" to Cue("Siku lengan penarik kurang naik."),
-        "DRAW_ARM_HIGH" to Cue("Siku lengan penarik terlalu lurus."),
+        "INVALID" to Cue("Postur tidak terlihat jelas. Arahkan HP ke samping pemanah."),
+        "DRAW_ELBOW_TOO_LOW" to Cue("Siku lengan penarik kurang naik, naikkan sampai bawah dagu."),
+        "DRAW_ELBOW_TOO_HIGH" to Cue("Siku lengan penarik terlalu tinggi, turunkan sedikit."),
+        "DRAW_ELBOW_CLOSED" to Cue("Sudut siku lengan penarik terlalu tertutup."),
+        "DRAW_ELBOW_OPEN" to Cue("Sudut siku lengan penarik terlalu terbuka."),
+        "ANCHOR_OFF" to Cue("Tangan penarik belum tepat di rahang."),
+        "BOW_ELBOW_BENT" to Cue("Lengan busur luruskan."),
         "ALIGNMENT_BAD" to Cue("Sejajarkan bahu dan pinggul."),
+        "STANCE_BAD" to Cue("Ratakan posisi kaki."),
         "WIND_COMPENSATION" to Cue("Angin kencang. Sesuaikan arah bidikan.")
     )
 

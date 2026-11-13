@@ -38,6 +38,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
@@ -50,7 +51,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,7 +72,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.iras.ai.BiomechanicsCalculator
 import com.example.iras.ai.Point3D
+import com.example.iras.ai.TechniqueEvaluator
 import com.example.iras.ai.VoiceCoach
 import com.example.iras.ai.VoiceCuePlanner
 import com.example.iras.ai.PoseFrame
@@ -84,7 +86,6 @@ import com.example.iras.ui.SavedVideo
 import com.example.iras.ui.playVideo
 import com.example.iras.ui.saveVideoToGallery
 import android.os.SystemClock
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.abs
@@ -132,29 +133,42 @@ fun MonitorScreen(
     }
     var hasAnalyzed by remember { mutableStateOf(false) }
     var fps by remember { mutableIntStateOf(30) }
-    var elbowAngle by remember { mutableIntStateOf(170) }
-    var shoulderTilt by remember { mutableFloatStateOf(1.5f) }
-    var anchorLocked by remember { mutableStateOf(true) }
-    var jitter by remember { mutableFloatStateOf(0f) }
+    var lastEvalTs by remember { mutableStateOf(0L) }
+    var drawElbowAngle by remember { mutableStateOf<Float?>(null) }
+    var drawElbowFaceRatio by remember { mutableStateOf<Float?>(null) }
+    var drawHandFaceRatio by remember { mutableStateOf<Float?>(null) }
+    var bowElbowAngle by remember { mutableStateOf<Float?>(null) }
+    var shoulderTilt by remember { mutableStateOf<Float?>(null) }
+    var stanceTilt by remember { mutableStateOf<Float?>(null) }
 
-    // Mengintegrasikan data AI MediaPipe saat analisis aktif, atau fallback simulasi saat standby
+    // Data AI MediaPipe. Nilai null berarti metrik itu tidak terbaca pada frame
+    // ini - sengaja dibiarkan kosong, bukan diisi angka tebakan.
     LaunchedEffect(analyzing, evaluationState) {
-        if (analyzing) {
-            val eval = evaluationState
-            if (eval != null && eval.isValid) {
-                elbowAngle = eval.metrics.drawArmElbowAngleDeg.toInt()
-                shoulderTilt = eval.metrics.bodyAlignmentDeviationDeg
-                anchorLocked = eval.techniqueStatus == "IDEAL"
-                fps = Random.nextInt(28, 32)
-                jitter = (Random.nextFloat() * 2f) - 1f
-            } else {
-                delay(400)
-                fps = Random.nextInt(28, 32)
-                jitter = (Random.nextFloat() * 2f) - 1f
-                elbowAngle = Random.nextInt(150, 176)
-                shoulderTilt = Random.nextFloat() * 6f
-                anchorLocked = Random.nextInt(10) > 2
+        val eval = evaluationState
+        if (analyzing && eval != null && eval.isValid) {
+            drawElbowAngle = eval.metrics.drawArmElbowAngleDeg
+            drawElbowFaceRatio = eval.metrics.drawElbowFaceRatio
+            drawHandFaceRatio = eval.metrics.drawHandFaceRatio
+            bowElbowAngle = eval.metrics.bowArmElbowAngleDeg
+            shoulderTilt = eval.metrics.bodyAlignmentDeviationDeg
+            stanceTilt = eval.metrics.stanceDeviationDeg
+        } else {
+            drawElbowAngle = null
+            drawElbowFaceRatio = null
+            drawHandFaceRatio = null
+            bowElbowAngle = null
+            shoulderTilt = null
+            stanceTilt = null
+        }
+
+        // FPS dihitung dari selisih timestamp frame MediaPipe.
+        val ts = eval?.timestampMs ?: 0L
+        if (ts > 0L) {
+            val dt = ts - lastEvalTs
+            if (lastEvalTs > 0L && dt in 1..1000L) {
+                fps = (1000f / dt).toInt().coerceIn(1, 60)
             }
+            lastEvalTs = ts
         }
     }
 
@@ -177,10 +191,32 @@ fun MonitorScreen(
         }
     }
 
-    val elbowOk = elbowAngle in 160..180
-    val shoulderOk = shoulderTilt <= 3f
-    val effectiveJitter = if (imu != null) (imu.gyroMagnitude / 30f).coerceIn(0f, 1f) else jitter
-    val tremorOk = abs(effectiveJitter) < 0.6f
+    // Salinan lokal supaya nilainya bisa di-smart-cast saat dipakai di dalam when.
+    val angleValue = drawElbowAngle
+    val elbowFaceValue = drawElbowFaceRatio
+    val handFaceValue = drawHandFaceRatio
+    val bowValue = bowElbowAngle
+    val shoulderValue = shoulderTilt
+    val stanceValue = stanceTilt
+
+    val elbowOk = angleValue?.let {
+        it >= TechniqueEvaluator.DRAW_ELBOW_MIN_DEG && it <= TechniqueEvaluator.DRAW_ELBOW_MAX_DEG
+    }
+    val elbowFaceOk = elbowFaceValue?.let {
+        it >= TechniqueEvaluator.DRAW_ELBOW_FACE_MIN && it <= TechniqueEvaluator.DRAW_ELBOW_FACE_MAX
+    }
+    val anchorOk = handFaceValue?.let {
+        it >= TechniqueEvaluator.ANCHOR_FACE_MIN && it <= TechniqueEvaluator.ANCHOR_FACE_MAX
+    }
+    val bowOk = bowValue?.let {
+        it >= TechniqueEvaluator.BOW_ELBOW_MIN_DEG && it <= TechniqueEvaluator.BOW_ELBOW_MAX_DEG
+    }
+    val shoulderOk = shoulderValue?.let { it <= TechniqueEvaluator.ALIGNMENT_MAX_DEG }
+    val stanceOk = stanceValue?.let { it <= TechniqueEvaluator.STANCE_MAX_DEG }
+
+    // Tremor hanya bisa diukur kalau wearable IMU tersambung.
+    val tremorValue = imu?.gyroMagnitude?.div(30f)?.coerceIn(0f, 1f)
+    val tremorOk = tremorValue?.let { abs(it) < 0.6f }
 
     Column(
         modifier = modifier
@@ -241,8 +277,13 @@ fun MonitorScreen(
                 SkeletonCanvas(
                     frame = currentFrame,
                     analyzing = analyzing,
-                    elbowAngle = elbowAngle,
+                    elbowAngle = drawElbowAngle,
                     elbowOk = elbowOk,
+                    drawElbowId = if (viewModel.isRightHanded) {
+                        BiomechanicsCalculator.ELBOW_RIGHT
+                    } else {
+                        BiomechanicsCalculator.ELBOW_LEFT
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -363,34 +404,90 @@ fun MonitorScreen(
                     }
 
                     MetricRow(
-                        label = "Sudut Siku",
-                        value = "$elbowAngle°",
+                        label = "Sudut Siku Penarik",
+                        value = angleValue?.let { "${it.toInt()}°" } ?: "—",
                         sub = when {
-                            elbowAngle < 160 -> "Terlalu Rapat"
-                            elbowAngle > 180 -> "Terlalu Lurus"
-                            else -> "Sudut Ideal"
+                            angleValue == null -> "Tidak terbaca"
+                            angleValue < TechniqueEvaluator.DRAW_ELBOW_MIN_DEG -> "Terlalu Tertutup"
+                            angleValue > TechniqueEvaluator.DRAW_ELBOW_MAX_DEG -> "Terlalu Terbuka"
+                            else -> "Sesuai"
                         },
                         ok = elbowOk
                     )
                     HorizontalDivider(color = Color(0xFFF0F2F6))
                     MetricRow(
-                        label = "Bahu (Alignment)",
-                        value = if (shoulderOk) "Sejajar" else "Miring",
-                        sub = if (shoulderOk) "Posisi Ideal" else "${"%.1f".format(shoulderTilt)}° Miring",
-                        ok = shoulderOk
+                        label = "Posisi Siku",
+                        value = elbowFaceValue?.let { "${(it * 100).toInt()}%" } ?: "—",
+                        sub = when {
+                            elbowFaceValue == null -> "Wajah tidak terbaca"
+                            elbowFaceValue < TechniqueEvaluator.DRAW_ELBOW_FACE_MIN -> "Terlalu Tinggi"
+                            elbowFaceValue > TechniqueEvaluator.DRAW_ELBOW_FACE_MAX -> "Kurang Naik"
+                            else -> "Antara Hidung-Dagu"
+                        },
+                        ok = elbowFaceOk
                     )
                     HorizontalDivider(color = Color(0xFFF0F2F6))
                     MetricRow(
                         label = "Anchor Point",
-                        value = if (anchorLocked) "Tepat" else "Lepas",
-                        sub = if (anchorLocked) "Konsisten" else "Goyang",
-                        ok = anchorLocked
+                        value = when (anchorOk) {
+                            true -> "Tepat"
+                            false -> "Perlu Dikoreksi"
+                            null -> "—"
+                        },
+                        sub = when {
+                            handFaceValue == null -> "Wajah tidak terbaca"
+                            anchorOk == true -> "Tangan di area rahang"
+                            else -> "Tangan di luar rahang"
+                        },
+                        ok = anchorOk
+                    )
+                    HorizontalDivider(color = Color(0xFFF0F2F6))
+                    MetricRow(
+                        label = "Lengan Busur",
+                        value = bowValue?.let { "${it.toInt()}°" } ?: "—",
+                        sub = when {
+                            bowValue == null -> "Tidak terbaca"
+                            bowValue < TechniqueEvaluator.BOW_ELBOW_MIN_DEG -> "Belum Lurus"
+                            bowValue > TechniqueEvaluator.BOW_ELBOW_MAX_DEG -> "Terkunci"
+                            else -> "Lurus"
+                        },
+                        ok = bowOk
+                    )
+                    HorizontalDivider(color = Color(0xFFF0F2F6))
+                    MetricRow(
+                        label = "Bahu (Alignment)",
+                        value = shoulderValue?.let { "${"%.1f".format(it)}°" } ?: "—",
+                        sub = when {
+                            shoulderValue == null -> "Hanya terbaca dari depan"
+                            shoulderOk == true -> "Sejajar"
+                            else -> "Miring"
+                        },
+                        ok = shoulderOk
+                    )
+                    HorizontalDivider(color = Color(0xFFF0F2F6))
+                    MetricRow(
+                        label = "Posisi Kaki",
+                        value = stanceValue?.let { "${"%.1f".format(it)}°" } ?: "—",
+                        sub = when {
+                            stanceValue == null -> "Hanya terbaca dari depan"
+                            stanceOk == true -> "Rata"
+                            else -> "Tidak Rata"
+                        },
+                        ok = stanceOk
                     )
                     HorizontalDivider(color = Color(0xFFF0F2F6))
                     MetricRow(
                         label = "Tremor Tangan",
-                        value = if (tremorOk) "Stabil" else "Tremor",
-                        sub = if (tremorOk) "Minimal" else "Terdeteksi",
+                        value = when (tremorOk) {
+                            true -> "Stabil"
+                            false -> "Tremor"
+                            null -> "—"
+                        },
+                        sub = when (tremorOk) {
+                            true -> "Minimal"
+                            false -> "Terdeteksi"
+                            null -> "Butuh wearable IMU"
+                        },
                         ok = tremorOk
                     )
                 }
@@ -444,6 +541,50 @@ fun MonitorScreen(
                             Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+            }
+
+            // ---------- Catatan posisi kamera ----------
+            Text(
+                "Sudut siku dan posisi siku terbaca paling akurat saat HP di samping " +
+                        "pemanah. Kemiringan bahu dan kaki justru hanya terbaca dari depan.",
+                fontSize = 11.sp,
+                color = Color(0xFF6B7280),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "Posisi siku diukur relatif wajah: 0% = ujung hidung, 100% = dagu. " +
+                        "Target coach: siku antara bawah hidung sampai dagu.",
+                fontSize = 11.sp,
+                color = Color(0xFF6B7280),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // ---------- Tangan penarik ----------
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Tangan penarik", fontSize = 14.sp, color = Color(0xFF374151))
+                    Text(
+                        "Lengan yang menarik tali busur",
+                        fontSize = 11.sp,
+                        color = Color(0xFF6B7280)
+                    )
+                }
+                listOf(true to "Kanan", false to "Kiri").forEach { (right, label) ->
+                    FilterChip(
+                        selected = viewModel.isRightHanded == right,
+                        onClick = { viewModel.updateHandedness(right) },
+                        label = { Text(label, fontSize = 12.sp) }
+                    )
                 }
             }
 
@@ -695,10 +836,19 @@ private fun MetricRow(
     label: String,
     value: String,
     sub: String,
-    ok: Boolean
+    ok: Boolean?
 ) {
-    val color = if (ok) GoodColor else BadColor
-    val icon: ImageVector = if (ok) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber
+    // null = metrik tidak terbaca, ditampilkan netral dengan tanda strip.
+    val color = when (ok) {
+        true -> GoodColor
+        false -> BadColor
+        null -> Color(0xFF9CA3AF)
+    }
+    val icon: ImageVector = when (ok) {
+        true -> Icons.Outlined.CheckCircle
+        false -> Icons.Outlined.WarningAmber
+        null -> Icons.Outlined.Visibility
+    }
 
     Row(
         modifier = Modifier
@@ -782,8 +932,9 @@ private val poseConnections = listOf(
 private fun SkeletonCanvas(
     frame: PoseFrame?,
     analyzing: Boolean,
-    elbowAngle: Int,
-    elbowOk: Boolean,
+    elbowAngle: Float?,
+    elbowOk: Boolean?,
+    drawElbowId: Int,
     modifier: Modifier = Modifier
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -861,16 +1012,20 @@ private fun SkeletonCanvas(
             }
         }
 
-        // Tampilkan teks sudut siku pada posisi siku (ID 14 atau ID 13)
-        val drawElbow = landmarks[14] ?: landmarks[13]
-        if (drawElbow != null && drawElbow.visibility >= visibilityThreshold) {
+        // Tampilkan teks sudut siku pada posisi siku lengan penarik
+        val drawElbow = landmarks[drawElbowId]
+        if (drawElbow != null && drawElbow.visibility >= visibilityThreshold && elbowAngle != null) {
             val elbowPos = mapPoint(drawElbow)
             drawText(
                 textMeasurer = textMeasurer,
-                text = "$elbowAngle°",
+                text = "${elbowAngle.toInt()}°",
                 topLeft = Offset(elbowPos.x + 12f, elbowPos.y - 28f),
                 style = TextStyle(
-                    color = if (elbowOk) Color(0xFF4ADE80) else Color(0xFFFF5252),
+                    color = when (elbowOk) {
+                        true -> Color(0xFF4ADE80)
+                        false -> Color(0xFFFF5252)
+                        null -> Color(0xFFB0BEC5)
+                    },
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )

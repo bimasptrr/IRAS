@@ -3,6 +3,9 @@ package com.example.iras.data
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.example.iras.ai.*
 import com.example.iras.ui.screens.SessionConfig
 import com.example.iras.ui.screens.SessionRecord
@@ -75,9 +78,22 @@ class IrasViewModel(application: Application) : AndroidViewModel(application), P
     }
 
     // --- Logika AI & Biomekanika ---
-    private val calculator = BiomechanicsCalculator(isRightHanded = true)
+    // Kalkulator dibuat ulang kalau tangan penarik diganti.
+    private var calculator = BiomechanicsCalculator(isRightHanded = true)
     private val smoother = FeatureSmoother(alpha = 0.5f)
     private val evaluator = TechniqueEvaluator()
+
+    /** Tangan yang menarik tali busur. */
+    var isRightHanded by mutableStateOf(true)
+        private set
+
+    fun updateHandedness(right: Boolean) {
+        if (right == isRightHanded) return
+        isRightHanded = right
+        calculator = BiomechanicsCalculator(isRightHanded = right)
+        smoother.reset()
+        _evaluationState.value = null
+    }
 
     private val _evaluationState = MutableStateFlow<TechniqueEvaluation?>(null)
     val evaluationState: StateFlow<TechniqueEvaluation?> = _evaluationState.asStateFlow()
@@ -98,7 +114,7 @@ class IrasViewModel(application: Application) : AndroidViewModel(application), P
         // jadi update StateFlow dilakukan langsung agar frame tidak tertukar urutan.
         _currentFrame.value = frame
 
-        val rawFeatures = calculator.extractFeatures(frame.landmarks, timestampMs)
+        val rawFeatures = calculator.extractFeatures(frame, timestampMs)
         val smoothedFeatures = smoother.smooth(rawFeatures)
         _evaluationState.value = evaluator.evaluate(smoothedFeatures, currentWind)
     }

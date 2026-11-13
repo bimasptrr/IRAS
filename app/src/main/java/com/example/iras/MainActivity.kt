@@ -249,6 +249,7 @@ fun IrasApp() {
 
                         IrasTab.Monitor -> MonitorScreen(
                             viewModel = vm,
+                            imu = imuData,
                             onFinishSession = { _, _ ->
                                 // Sesi sudah dibuat dari Dashboard, jadi tidak disimpan lagi
                                 selectedTab = IrasTab.Dashboard.ordinal
