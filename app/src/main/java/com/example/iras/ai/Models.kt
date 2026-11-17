@@ -11,9 +11,6 @@ data class PoseFrame(
 
 data class BiomechanicsFeatures(
     val drawArmElbowAngleDeg: Float?,
-    val drawElbowFaceRatio: Float?,
-    val drawHandFaceRatio: Float?,
-    val bowArmElbowAngleDeg: Float?,
     val bodyAlignmentDeviationDeg: Float?,
     val stanceDeviationDeg: Float?,
     val featureTimestampMs: Long,

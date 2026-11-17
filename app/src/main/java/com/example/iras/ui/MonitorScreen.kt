@@ -74,7 +74,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.iras.ai.BiomechanicsCalculator
 import com.example.iras.ai.Point3D
-import com.example.iras.ai.TechniqueEvaluator
 import com.example.iras.ai.VoiceCoach
 import com.example.iras.ai.VoiceCuePlanner
 import com.example.iras.ai.PoseFrame
@@ -135,9 +134,6 @@ fun MonitorScreen(
     var fps by remember { mutableIntStateOf(30) }
     var lastEvalTs by remember { mutableStateOf(0L) }
     var drawElbowAngle by remember { mutableStateOf<Float?>(null) }
-    var drawElbowFaceRatio by remember { mutableStateOf<Float?>(null) }
-    var drawHandFaceRatio by remember { mutableStateOf<Float?>(null) }
-    var bowElbowAngle by remember { mutableStateOf<Float?>(null) }
     var shoulderTilt by remember { mutableStateOf<Float?>(null) }
     var stanceTilt by remember { mutableStateOf<Float?>(null) }
 
@@ -147,16 +143,10 @@ fun MonitorScreen(
         val eval = evaluationState
         if (analyzing && eval != null && eval.isValid) {
             drawElbowAngle = eval.metrics.drawArmElbowAngleDeg
-            drawElbowFaceRatio = eval.metrics.drawElbowFaceRatio
-            drawHandFaceRatio = eval.metrics.drawHandFaceRatio
-            bowElbowAngle = eval.metrics.bowArmElbowAngleDeg
             shoulderTilt = eval.metrics.bodyAlignmentDeviationDeg
             stanceTilt = eval.metrics.stanceDeviationDeg
         } else {
             drawElbowAngle = null
-            drawElbowFaceRatio = null
-            drawHandFaceRatio = null
-            bowElbowAngle = null
             shoulderTilt = null
             stanceTilt = null
         }
@@ -193,26 +183,29 @@ fun MonitorScreen(
 
     // Salinan lokal supaya nilainya bisa di-smart-cast saat dipakai di dalam when.
     val angleValue = drawElbowAngle
-    val elbowFaceValue = drawElbowFaceRatio
-    val handFaceValue = drawHandFaceRatio
-    val bowValue = bowElbowAngle
     val shoulderValue = shoulderTilt
     val stanceValue = stanceTilt
 
-    val elbowOk = angleValue?.let {
-        it >= TechniqueEvaluator.DRAW_ELBOW_MIN_DEG && it <= TechniqueEvaluator.DRAW_ELBOW_MAX_DEG
+    // Vonis evaluator adalah satu-satunya sumber kebenaran status metrik, jadi
+    // yang ditampilkan di layar dan yang diucapkan suara selalu sama.
+    val issueCodes = evaluationState?.issues?.map { it.code }?.toSet().orEmpty()
+
+    val elbowOk = when {
+        angleValue == null -> null
+        "DRAW_ELBOW_CLOSED" in issueCodes -> false
+        "DRAW_ELBOW_OPEN" in issueCodes -> false
+        else -> true
     }
-    val elbowFaceOk = elbowFaceValue?.let {
-        it >= TechniqueEvaluator.DRAW_ELBOW_FACE_MIN && it <= TechniqueEvaluator.DRAW_ELBOW_FACE_MAX
+    val shoulderOk = when {
+        shoulderValue == null -> null
+        "ALIGNMENT_BAD" in issueCodes -> false
+        else -> true
     }
-    val anchorOk = handFaceValue?.let {
-        it >= TechniqueEvaluator.ANCHOR_FACE_MIN && it <= TechniqueEvaluator.ANCHOR_FACE_MAX
+    val stanceOk = when {
+        stanceValue == null -> null
+        "STANCE_BAD" in issueCodes -> false
+        else -> true
     }
-    val bowOk = bowValue?.let {
-        it >= TechniqueEvaluator.BOW_ELBOW_MIN_DEG && it <= TechniqueEvaluator.BOW_ELBOW_MAX_DEG
-    }
-    val shoulderOk = shoulderValue?.let { it <= TechniqueEvaluator.ALIGNMENT_MAX_DEG }
-    val stanceOk = stanceValue?.let { it <= TechniqueEvaluator.STANCE_MAX_DEG }
 
     // Tremor hanya bisa diukur kalau wearable IMU tersambung.
     val tremorValue = imu?.gyroMagnitude?.div(30f)?.coerceIn(0f, 1f)
@@ -408,50 +401,11 @@ fun MonitorScreen(
                         value = angleValue?.let { "${it.toInt()}°" } ?: "—",
                         sub = when {
                             angleValue == null -> "Tidak terbaca"
-                            angleValue < TechniqueEvaluator.DRAW_ELBOW_MIN_DEG -> "Terlalu Tertutup"
-                            angleValue > TechniqueEvaluator.DRAW_ELBOW_MAX_DEG -> "Terlalu Terbuka"
+                            "DRAW_ELBOW_CLOSED" in issueCodes -> "Terlalu Tertutup"
+                            "DRAW_ELBOW_OPEN" in issueCodes -> "Terlalu Terbuka"
                             else -> "Sesuai"
                         },
                         ok = elbowOk
-                    )
-                    HorizontalDivider(color = Color(0xFFF0F2F6))
-                    MetricRow(
-                        label = "Posisi Siku",
-                        value = elbowFaceValue?.let { "${(it * 100).toInt()}%" } ?: "—",
-                        sub = when {
-                            elbowFaceValue == null -> "Wajah tidak terbaca"
-                            elbowFaceValue < TechniqueEvaluator.DRAW_ELBOW_FACE_MIN -> "Terlalu Tinggi"
-                            elbowFaceValue > TechniqueEvaluator.DRAW_ELBOW_FACE_MAX -> "Kurang Naik"
-                            else -> "Antara Hidung-Dagu"
-                        },
-                        ok = elbowFaceOk
-                    )
-                    HorizontalDivider(color = Color(0xFFF0F2F6))
-                    MetricRow(
-                        label = "Anchor Point",
-                        value = when (anchorOk) {
-                            true -> "Tepat"
-                            false -> "Perlu Dikoreksi"
-                            null -> "—"
-                        },
-                        sub = when {
-                            handFaceValue == null -> "Wajah tidak terbaca"
-                            anchorOk == true -> "Tangan di area rahang"
-                            else -> "Tangan di luar rahang"
-                        },
-                        ok = anchorOk
-                    )
-                    HorizontalDivider(color = Color(0xFFF0F2F6))
-                    MetricRow(
-                        label = "Lengan Busur",
-                        value = bowValue?.let { "${it.toInt()}°" } ?: "—",
-                        sub = when {
-                            bowValue == null -> "Tidak terbaca"
-                            bowValue < TechniqueEvaluator.BOW_ELBOW_MIN_DEG -> "Belum Lurus"
-                            bowValue > TechniqueEvaluator.BOW_ELBOW_MAX_DEG -> "Terkunci"
-                            else -> "Lurus"
-                        },
-                        ok = bowOk
                     )
                     HorizontalDivider(color = Color(0xFFF0F2F6))
                     MetricRow(
@@ -459,8 +413,8 @@ fun MonitorScreen(
                         value = shoulderValue?.let { "${"%.1f".format(it)}°" } ?: "—",
                         sub = when {
                             shoulderValue == null -> "Hanya terbaca dari depan"
-                            shoulderOk == true -> "Sejajar"
-                            else -> "Miring"
+                            "ALIGNMENT_BAD" in issueCodes -> "Miring"
+                            else -> "Sejajar"
                         },
                         ok = shoulderOk
                     )
@@ -470,8 +424,8 @@ fun MonitorScreen(
                         value = stanceValue?.let { "${"%.1f".format(it)}°" } ?: "—",
                         sub = when {
                             stanceValue == null -> "Hanya terbaca dari depan"
-                            stanceOk == true -> "Rata"
-                            else -> "Tidak Rata"
+                            "STANCE_BAD" in issueCodes -> "Tidak Rata"
+                            else -> "Rata"
                         },
                         ok = stanceOk
                     )
@@ -689,6 +643,10 @@ fun MonitorScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Suara koreksi", fontSize = 14.sp, color = Color(0xFF374151))
                     when (voiceStatus) {
+                        VoiceCoach.Status.INIT -> Text(
+                            "Menyiapkan suara koreksi...",
+                            fontSize = 11.sp, color = Color(0xFF6B7280)
+                        )
                         VoiceCoach.Status.NO_INDONESIAN -> Text(
                             "Suara bahasa Indonesia belum terpasang di HP",
                             fontSize = 11.sp, color = BadColor

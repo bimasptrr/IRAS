@@ -24,14 +24,11 @@ class FeatureSmoother(private val alpha: Float = 0.5f) {
 
         val held = current.copy(
             drawArmElbowAngleDeg = current.drawArmElbowAngleDeg ?: prev.drawArmElbowAngleDeg,
-            drawElbowFaceRatio = current.drawElbowFaceRatio ?: prev.drawElbowFaceRatio,
-            drawHandFaceRatio = current.drawHandFaceRatio ?: prev.drawHandFaceRatio,
-            bowArmElbowAngleDeg = current.bowArmElbowAngleDeg ?: prev.bowArmElbowAngleDeg,
             bodyAlignmentDeviationDeg = current.bodyAlignmentDeviationDeg ?: prev.bodyAlignmentDeviationDeg,
             stanceDeviationDeg = current.stanceDeviationDeg ?: prev.stanceDeviationDeg
         )
 
-        val blank = held.drawArmElbowAngleDeg == null && held.drawElbowFaceRatio == null
+        val blank = held.drawArmElbowAngleDeg == null && held.bodyAlignmentDeviationDeg == null
         if (blank) {
             misses++
             if (misses > MAX_MISSES) {
@@ -47,9 +44,6 @@ class FeatureSmoother(private val alpha: Float = 0.5f) {
 
         val smoothed = held.copy(
             drawArmElbowAngleDeg = blend(held.drawArmElbowAngleDeg, prev.drawArmElbowAngleDeg),
-            drawElbowFaceRatio = blend(held.drawElbowFaceRatio, prev.drawElbowFaceRatio),
-            drawHandFaceRatio = blend(held.drawHandFaceRatio, prev.drawHandFaceRatio),
-            bowArmElbowAngleDeg = blend(held.bowArmElbowAngleDeg, prev.bowArmElbowAngleDeg),
             bodyAlignmentDeviationDeg = blend(held.bodyAlignmentDeviationDeg, prev.bodyAlignmentDeviationDeg),
             stanceDeviationDeg = blend(held.stanceDeviationDeg, prev.stanceDeviationDeg)
         )
