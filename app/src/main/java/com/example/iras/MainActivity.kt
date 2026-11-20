@@ -28,6 +28,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -147,6 +148,12 @@ fun IrasApp() {
         val imuStatus by ble.statusText.collectAsState()
         // Status IMU hijau jika ESP32 (apa pun UUID-nya) tersambung dan data x,y,z sudah diterima
         val imuConnected = bleState is BleState.Connected && (imuData != null || imuStatus != null)
+
+        // Alirkan data angin BLE ke ViewModel agar dievaluasi saat "Mulai Analisis" ditekan
+        val windData by bleWind.wind.collectAsState()
+        LaunchedEffect(windData) {
+            vm.onBleWindReceived(windData)
+        }
 
         // Semua tab punya header navy, jadi ikon status bar selalu terang (putih)
         val view = LocalView.current

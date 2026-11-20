@@ -1,12 +1,14 @@
 package com.example.iras.data
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.iras.ai.*
+import com.example.iras.ble.WindData
 import com.example.iras.ui.screens.SessionConfig
 import com.example.iras.ui.screens.SessionRecord
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +21,12 @@ import java.util.Locale
 
 // Typealias untuk menjamin kompatibilitas jika ada bagian kode yang memanggil TrainingSession
 typealias TrainingSession = SessionRecord
+
+data class WindVoiceCue(
+    val text: String,
+    val isCritical: Boolean,
+    val timestampMs: Long
+)
 
 class IrasViewModel(application: Application) : AndroidViewModel(application), PoseEstimator.PoseListener {
 
@@ -81,7 +89,9 @@ class IrasViewModel(application: Application) : AndroidViewModel(application), P
     // Kalkulator dibuat ulang kalau tangan penarik diganti.
     private var calculator = BiomechanicsCalculator(isRightHanded = true)
     private val smoother = FeatureSmoother(alpha = 0.5f)
-    private val evaluator = TechniqueEvaluator()
+    private val windEvaluator = WindEvaluator()
+    private val windStabilizer = WindStabilizer()
+    private val evaluator = TechniqueEvaluator(windEvaluator)
 
     /** Tangan yang menarik tali busur. */
     var isRightHanded by mutableStateOf(true)
@@ -103,15 +113,44 @@ class IrasViewModel(application: Application) : AndroidViewModel(application), P
     private val _currentFrame = MutableStateFlow<PoseFrame?>(null)
     val currentFrame: StateFlow<PoseFrame?> = _currentFrame.asStateFlow()
 
+    // Penanda apakah mode "Mulai Analisis" sedang aktif
+    private val _isAnalyzing = MutableStateFlow(false)
+    val isAnalyzing: StateFlow<Boolean> = _isAnalyzing.asStateFlow()
+
     private var currentWind: WindSnapshot? = null
 
+    private val _windEvaluation = MutableStateFlow<WindEvaluation?>(null)
+    val windEvaluation: StateFlow<WindEvaluation?> = _windEvaluation.asStateFlow()
+
     fun updateWindData(wind: WindSnapshot) {
-        currentWind = wind
+        // Level dan sektor distabilkan dulu supaya fluktuasi sensor tidak
+        // memicu instruksi suara baru tiap detik.
+        val stable = windStabilizer.stabilize(wind, SystemClock.elapsedRealtime())
+        currentWind = stable
+        _windEvaluation.value = windEvaluator.evaluate(stable)
+    }
+
+    /** Menerima paket WindData langsung dari BleManager.wind. */
+    fun onBleWindReceived(windData: WindData?) {
+        if (windData == null) {
+            currentWind = null
+            _windEvaluation.value = null
+            return
+        }
+        val snapshot = WindSnapshot(
+            speedMps = windData.speed,
+            directionDeg = windData.degrees,
+            timestampMs = windData.timestamp,
+            isValid = windData.directionOk
+        )
+        updateWindData(snapshot)
     }
 
     override fun onPoseDetected(frame: PoseFrame, timestampMs: Long) {
-        // Callback MediaPipe sudah berjalan berurutan di thread result listener,
-        // jadi update StateFlow dilakukan langsung agar frame tidak tertukar urutan.
+        // Callback MediaPipe hanya berjalan setelah tombol "Mulai Analisis" ditekan.
+        if (!_isAnalyzing.value) {
+            _isAnalyzing.value = true
+        }
         _currentFrame.value = frame
 
         val rawFeatures = calculator.extractFeatures(frame, timestampMs)
@@ -125,9 +164,12 @@ class IrasViewModel(application: Application) : AndroidViewModel(application), P
     }
 
     fun resetSession() {
+        _isAnalyzing.value = false
         _currentFrame.value = null
         smoother.reset()
         _evaluationState.value = null
         currentWind = null
+        windStabilizer.reset()
+        _windEvaluation.value = null
     }
 }

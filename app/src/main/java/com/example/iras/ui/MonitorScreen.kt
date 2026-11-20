@@ -177,7 +177,9 @@ fun MonitorScreen(
     }
     LaunchedEffect(evaluationState) {
         if (analyzing && voiceOn) {
-            planner.next(evaluationState, SystemClock.elapsedRealtime())?.let { voice.speak(it) }
+            planner.next(evaluationState, SystemClock.elapsedRealtime())?.let { cue ->
+                voice.speak(cue.text, urgent = cue.interrupt)
+            }
         }
     }
 

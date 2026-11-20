@@ -22,7 +22,20 @@ data class WindSnapshot(
     val speedMps: Float,
     val directionDeg: Float,
     val timestampMs: Long,
-    val isValid: Boolean
+    val isValid: Boolean,
+    // Level dan sektor yang sudah disstabilkan (hysteresis). Null = pakai nilai mentah.
+    val stableLevel: WindLevel? = null,
+    val stableSector: WindSector? = null
+)
+
+/**
+ * Instruksi suara siap diucapkan.
+ * [interrupt] = true berarti instruksi ini boleh memotong suara yang sedang
+ * berjalan - dipakai untuk peringatan "batalkan tembakan".
+ */
+data class VoiceCue(
+    val text: String,
+    val interrupt: Boolean = false
 )
 
 data class TechniqueEvaluation(
